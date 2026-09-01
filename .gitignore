@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.env
+.env.*
+.DS_Store
+a_dividend_outputs/
+reports/
+_bank_report_cache/

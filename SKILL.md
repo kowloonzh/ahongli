@@ -1,0 +1,161 @@
+---
+name: ahongli
+description: Use when screening the latest CSI 300 constituents for quality-dividend candidates with long-term yield persistence, structured profitability and cash-flow gates, structured main-business property exclusion, separate bank/other-financial/nonfinancial factor scoring, and auditable Top10 CSV/Markdown/HTML output.
+---
+
+# AHongli Dividend Strategy
+
+## Purpose
+
+Screen the latest 沪深300 constituents for durable quality-dividend candidates. This is not a current-yield chase or investment instruction. A company must pass all hard gates before its factor score can qualify it for the formal Top10.
+
+Read [references/strategy-spec.md](references/strategy-spec.md) before changing factor calculations, thresholds, weights, or selection behavior. Read [references/data-contract.md](references/data-contract.md) before changing Tushare fields, company-profile caching, or output columns.
+
+Read [references/bank-metrics.md](references/bank-metrics.md) when collecting or evaluating bank-specific asset-quality, margin, provision, or regulatory-capital metrics. These metrics are part of the formal bank hard gates and score.
+
+## Required Skill
+
+Use `$tushare` for constituents, company profiles, market history, dividends, financial statements, audit results, and all structured evidence. This strategy does not consume subjective `financial-report-reader` analysis reports. Bank-only NPL, provision, NIM, efficiency, and regulatory-capital metrics are parsed deterministically from original annual reports.
+
+## Workflow
+
+Run these stages in order and persist the count entering and leaving each stage.
+
+### 1. Refresh the 300-stock universe and profiles
+
+Fetch or reuse the exact latest `000300.SH` snapshot and require exactly 300 unique constituents. At the same time fetch Tushare `stock_company` for `SSE` and `SZSE`, join by `ts_code`, and require non-empty `main_business`, `business_scope`, and `introduction` for all 300 companies.
+
+`main_business` is the primary direct-property evidence. `stock_basic.industry` is a fast explicit-industry signal. `business_scope` and `introduction` are retained for audit but do not independently exclude a construction, materials, or financial company merely because their broad legal scope mentions property.
+
+### 2. Market preflight
+
+Fetch or reuse five-year `daily_basic.dv_ttm` data.
+
+Hard market preflight:
+
+- at least 1000 valid dividend-yield trading days;
+- valid-data coverage at least 80%;
+- `dv_ttm >= 3%` on at least 80% of valid days.
+
+Current price, current dividend yield, and the pass ratio may be displayed but never scored. Five-year yield CV is calculated here and scored later.
+
+### 3. Structured financial gates and scoring
+
+For market-preflight passers, fetch or reuse Tushare `dividend`, `income`, `fina_indicator`, `cashflow`, `balancesheet`, and `fina_audit` evidence. Obtain enough structured ROE inputs for all 300 companies to calculate the CSI 300 lowest-volatility 80% benchmark.
+
+Apply every structured hard gate, including direct-property exclusion from the cached company profile. Score complete passers directly; do not query disclosure periods, generate reports, or parse subjective company-quality labels.
+
+## Hard Gates
+
+Hard gates do not contribute points:
+
+- five-year yield persistence and data sufficiency;
+- three consecutive implemented cash-dividend fiscal years;
+- `10% <` three-year average annual payout ratio `< 100%` and `0% <` latest payout ratio `< 100%`;
+- twelve quarterly TTM ROE observations with standard deviation in the CSI 300 lowest 80%;
+- four positive annual `profit_dedt` observations with latest not below three years earlier;
+- latest comparable DPS / prior-three-year median comparable DPS at least 70%;
+- nonfinancial companies: latest CFO/dividend at least 1 and three-year median at least 1;
+- latest audited annual opinion is standard unqualified;
+- no direct property-development, property-sales, or commercial-property-operation main business.
+- banks additionally require three complete audited annual observations for all eight bank metrics, latest NPL ratio at most 2%, provision coverage at least 150%, actual loan provision ratio at least 2.5%, core Tier-1 capital at least 7.5%, Tier-1 capital at least 8.5%, and total capital adequacy at least 10.5%.
+
+There is no company-quality category gate. Missing mandatory structured evidence is `data_gap`, not zero and not a hard-gate failure. Do not create a formal ranking while a required factor remains a data gap.
+
+## Scoring
+
+Use market-preflight passers as the scoring reference pool. Winsorize each factor at 2.5% and 97.5%. Bank-specific and bank common-factor percentiles use the bank pool; nonfinancial percentiles use the nonfinancial pool. Other-financial companies retain their own weight model but benchmark common factors against all financial passers, preventing a one-company insurance cohort from mechanically scoring 100. Reverse five-year yield CV, bank NPL level/change, and bank cost-income ratio. Do not redistribute missing weights per company.
+
+Nonfinancial weights:
+
+- latest TTM ROE 20%;
+- DROE 10%;
+- OPCFD 15%;
+- three-year cumulative FCF/dividend coverage 20%;
+- five-year yield CV 10%;
+- actual consecutive dividend years 10%;
+- five-year comparable DPS CAGR 15%.
+
+Financial weights:
+
+- latest TTM ROE 30%;
+- DROE 15%;
+- five-year yield CV 20%;
+- actual consecutive dividend years 20%;
+- five-year comparable DPS CAGR 15%.
+
+Bank weights:
+
+- latest TTM ROE 15%;
+- DROE 5%;
+- NPL quality 15% (`80% × latest NPL reverse percentile + 20% × three-year NPL change reverse percentile`);
+- provision quality 10% (provision-coverage percentile only); actual loan provision ratio is a separate hard gate and is not scored;
+- capital resilience 10% (`60% × core Tier-1 percentile + 40% × total capital adequacy percentile`);
+- NIM quality 10% (`70% × latest NIM percentile + 30% × three-year NIM change percentile`);
+- cost-income ratio 5% (lower is better);
+- five-year yield CV 10%;
+- actual consecutive dividend years 10%;
+- five-year comparable DPS CAGR 10%.
+
+Do not cap consecutive dividend years at ten. Financial companies do not receive zero for OPCFD or FCF coverage; those factors are not applicable and their separate model already totals 100%.
+
+## Company Profile Reuse
+
+Company profile text normally changes slowly. Cache it with the constituent snapshot and source/fetch date. Refresh when creating a new run-date universe, when constituents change, when the user requests a profile refresh, or when any mandatory profile field is empty. Do not silently classify an empty profile as non-property.
+
+## Bank Metrics Preparation
+
+Tushare provides general bank profitability fields but not the complete set of disclosed NPL, provision, net-interest-margin, and regulatory-capital ratios. After market preflight, the main runner automatically calls `prepare_bank_metrics.py` when the run-date bank cache is absent or incomplete. It resolves every preflight-passing bank from the compact CSI 300 bank map, downloads only reports available by the run date, extracts original annual-report text, validates the latest three audited years, and writes the combined cache. The individual commands below are diagnostic fallbacks:
+
+```bash
+python3 scripts/download_bank_reports.py 601229 \
+  --out ./bank_reports/601229 --as-of-date YYYYMMDD
+python3 scripts/extract_bank_reports.py \
+  ./bank_reports/601229/manifest.json --out ./bank_reports/601229_text --backend pdftotext
+python3 scripts/parse_bank_metrics.py \
+  ./bank_reports/601229_text/*年度报告*.md --out ./bank_quality_metrics.csv
+```
+
+Combine all bank rows into `a_dividend_outputs/{YYYYMMDD}/market_data/bank_quality_metrics.csv`. The parser must retain source file, page, and raw evidence. The formal run stops if any preflight bank lacks three complete annual observations or any required metric; missing values are `data_gap`, never zero. Refresh the compact stock map when the preflight bank set changes.
+
+For a standalone batch repair:
+
+```bash
+python3 scripts/prepare_bank_metrics.py \
+  --output a_dividend_outputs/YYYYMMDD/market_data/bank_quality_metrics.csv \
+  --as-of-date YYYYMMDD --bank-codes 600036.SH 601398.SH
+```
+
+## Run
+
+```bash
+python3 scripts/run_a_dividend_strategy.py \
+  --run-date YYYYMMDD
+```
+
+Use `--skip-fetch` only when the market, profile, and structured-factor caches cover the applicable stage. Use `--refresh-constituents` when the user asks for a fresh CSI 300 universe.
+
+## Threshold Simulation
+
+Keep the formal threshold at 3%. For counterfactual threshold research, use the isolated simulator; it builds or reuses all-constituent structured evidence and never writes formal filenames:
+
+```bash
+python3 scripts/simulate_dividend_threshold.py \
+  --run-date YYYYMMDD --yield-threshold 2.5
+```
+
+Simulation output goes to `a_dividend_outputs/{YYYYMMDD}_sim_yield_{threshold}/`. Never present a simulation as the formal strategy result.
+
+## Outputs
+
+Write under `a_dividend_outputs/{YYYYMMDD}/`:
+
+- `hs300-dividend-candidates-{YYYYMMDD}.csv` with all 300 constituents;
+- `hs300-dividend-top10-{YYYYMMDD}.csv` containing only all-gate passers;
+- `hs300-dividend-report-{YYYYMMDD}.md`;
+- `hs300-dividend-dashboard-{YYYYMMDD}.html`;
+- auditable market, company-profile, dividend, structured-financial, and factor caches.
+
+Every rejected row needs a specific non-empty reason. Distinguish `data_gap`, `hard_gate_failed`, and `selected`. Show raw gate values, profile source, main business, factor percentiles, weighted contributions, data periods, sources, and quality. Report stage counts: 300 total, market passers, structured passers, and final selections.
+
+Legacy price, current-yield, persistence-ratio, text-safety, dividend-financing, execution-composite, company-quality, and real-estate-relevance scores must not affect the total.

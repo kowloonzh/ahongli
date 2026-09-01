@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""Convert downloaded report PDFs to Markdown or layout-preserving text."""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+
+def choose_backend(requested: str, report_count: int = 1) -> str:
+    if requested == "hybrid":
+        requested = "pdftotext" if report_count > 1 else "pymupdf4llm"
+    if requested != "auto":
+        if requested == "pdftotext" and not shutil.which("pdftotext"):
+            raise RuntimeError("pdftotext not found. Install Poppler with: sudo apt install poppler-utils")
+        if requested == "pymupdf4llm" and importlib.util.find_spec("pymupdf4llm") is None:
+            raise RuntimeError("pymupdf4llm not found. Install with: python3 -m pip install pymupdf4llm")
+        return requested
+
+    if report_count > 1 and shutil.which("pdftotext"):
+        return "pdftotext"
+    if importlib.util.find_spec("pymupdf4llm") is not None:
+        return "pymupdf4llm"
+    if shutil.which("pdftotext"):
+        return "pdftotext"
+    raise RuntimeError(
+        "No PDF parser found. Install one of: python3 -m pip install pymupdf4llm, or sudo apt install poppler-utils"
+    )
+
+
+def markdown_output_path(pdf_path: Path, output_dir: Path) -> Path:
+    return output_dir / f"{pdf_path.stem}.md"
+
+
+def extract_with_pymupdf4llm(pdf_path: Path, output_path: Path, chunks_path: Path | None) -> None:
+    import pymupdf4llm
+
+    if chunks_path:
+        chunks = pymupdf4llm.to_markdown(str(pdf_path), page_chunks=True)
+        markdown = "\n\n".join(chunk.get("text", "") for chunk in chunks)
+        output_path.write_text(markdown, encoding="utf-8")
+        chunks_path.write_text(json.dumps(chunks, ensure_ascii=False, indent=2), encoding="utf-8")
+    else:
+        markdown = pymupdf4llm.to_markdown(str(pdf_path))
+        output_path.write_text(markdown, encoding="utf-8")
+
+
+def split_pdftotext_pages(text: str) -> list[dict[str, Any]]:
+    pages = text.split("\f")
+    if pages and pages[-1] == "":
+        pages = pages[:-1]
+    return [
+        {
+            "page_number": index + 1,
+            "text": page,
+        }
+        for index, page in enumerate(pages)
+    ]
+
+
+def extract_with_pdftotext(pdf_path: Path, output_path: Path, chunks_path: Path | None) -> None:
+    if not shutil.which("pdftotext"):
+        raise RuntimeError("pdftotext not found. Install Poppler with: sudo apt install poppler-utils")
+    result = subprocess.run(
+        ["pdftotext", "-layout", str(pdf_path), "-"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    output_path.write_text(result.stdout, encoding="utf-8")
+    if chunks_path:
+        chunks_path.write_text(
+            json.dumps(split_pdftotext_pages(result.stdout), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+
+def load_manifest(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def save_manifest(path: Path, manifest: dict[str, Any]) -> None:
+    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def extract_manifest(manifest_path: Path, output_dir: Path, backend: str, write_chunks: bool) -> dict[str, Any]:
+    manifest = load_manifest(manifest_path)
+    base_dir = Path(manifest.get("output_dir") or manifest_path.parent).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    reports = manifest.get("reports", [])
+    selected_backend = choose_backend(backend, report_count=len(reports))
+
+    for report in reports:
+        pdf_path = (base_dir / report["path"]).resolve()
+        out_path = markdown_output_path(pdf_path, output_dir)
+        chunks_path = out_path.with_suffix(".pages.json") if write_chunks else None
+
+        if selected_backend == "pymupdf4llm":
+            extract_with_pymupdf4llm(pdf_path, out_path, chunks_path)
+        elif selected_backend == "pdftotext":
+            extract_with_pdftotext(pdf_path, out_path, chunks_path)
+        else:
+            raise RuntimeError(f"Unsupported backend: {selected_backend}")
+
+        report["text_path"] = str(out_path.relative_to(output_dir))
+        report["text_path_absolute"] = str(out_path.resolve())
+        report["text_format"] = "markdown" if selected_backend == "pymupdf4llm" else "text"
+        report["parser"] = selected_backend
+        if chunks_path:
+            report["page_chunks_path"] = str(chunks_path.relative_to(output_dir))
+            report["page_chunks_path_absolute"] = str(chunks_path.resolve())
+
+    extracted_manifest = output_dir / "manifest.extracted.json"
+    manifest["extracted_output_dir"] = str(output_dir.resolve())
+    save_manifest(extracted_manifest, manifest)
+    return manifest
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("manifest", type=Path, help="manifest.json generated by download_reports.py")
+    parser.add_argument("--out", type=Path, default=Path("reports_text"), help="Output directory")
+    parser.add_argument("--backend", choices=["auto", "hybrid", "pymupdf4llm", "pdftotext"], default="auto")
+    parser.add_argument("--no-page-chunks", action="store_true", help="Skip page chunk JSON")
+    args = parser.parse_args(argv)
+
+    try:
+        manifest = extract_manifest(args.manifest.resolve(), args.out.resolve(), args.backend, not args.no_page_chunks)
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    print(json.dumps(manifest, ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

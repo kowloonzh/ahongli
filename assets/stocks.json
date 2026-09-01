@@ -1,0 +1,28 @@
+{
+  "szse": {
+    "000001": {"code": "000001", "pinyin": "payh", "category": "A股", "orgId": "gssz0000001", "zwjc": "平安银行"},
+    "002142": {"code": "002142", "pinyin": "nbyh", "category": "A股", "orgId": "9900003281", "zwjc": "宁波银行"},
+    "601229": {"code": "601229", "pinyin": "shyh", "category": "A股", "orgId": "9900010207", "zwjc": "上海银行"},
+    "601398": {"code": "601398", "pinyin": "gsyh", "category": "A股", "orgId": "jjxt0000019", "zwjc": "工商银行"},
+    "601077": {"code": "601077", "pinyin": "ynsh", "category": "A股", "orgId": "9900016867", "zwjc": "渝农商行"},
+    "600036": {"code": "600036", "pinyin": "zsyh", "category": "A股", "orgId": "gssh0600036", "zwjc": "招商银行"},
+    "600919": {"code": "600919", "pinyin": "jsyh", "category": "A股", "orgId": "9900006248", "zwjc": "江苏银行"},
+    "600926": {"code": "600926", "pinyin": "hzyh", "category": "A股", "orgId": "9900006251", "zwjc": "杭州银行"},
+    "601998": {"code": "601998", "pinyin": "zxyh", "category": "A股", "orgId": "9900002721", "zwjc": "中信银行"},
+    "601288": {"code": "601288", "pinyin": "nyyh", "category": "A股", "orgId": "jjxt0000020", "zwjc": "农业银行"},
+    "600015": {"code": "600015", "pinyin": "hxyh", "category": "A股", "orgId": "gssh0600015", "zwjc": "华夏银行"},
+    "601939": {"code": "601939", "pinyin": "jsyh", "category": "A股", "orgId": "9900003682", "zwjc": "建设银行"},
+    "601988": {"code": "601988", "pinyin": "zgyh", "category": "A股", "orgId": "jjxt0000028", "zwjc": "中国银行"},
+    "601328": {"code": "601328", "pinyin": "jtyh", "category": "A股", "orgId": "9900002841", "zwjc": "交通银行"},
+    "601825": {"code": "601825", "pinyin": "hnsh", "category": "A股", "orgId": "9900010687", "zwjc": "沪农商行"},
+    "601658": {"code": "601658", "pinyin": "ycyh", "category": "A股", "orgId": "9900005091", "zwjc": "邮储银行"},
+    "601009": {"code": "601009", "pinyin": "njyh", "category": "A股", "orgId": "9900003284", "zwjc": "南京银行"},
+    "601838": {"code": "601838", "pinyin": "cdyh", "category": "A股", "orgId": "9900021318", "zwjc": "成都银行"},
+    "601166": {"code": "601166", "pinyin": "xyyh", "category": "A股", "orgId": "9900002081", "zwjc": "兴业银行"},
+    "600000": {"code": "600000", "pinyin": "pfyh", "category": "A股", "orgId": "gssh0600000", "zwjc": "浦发银行"},
+    "600016": {"code": "600016", "pinyin": "msyh", "category": "A股", "orgId": "gssh0600016", "zwjc": "民生银行"},
+    "601169": {"code": "601169", "pinyin": "bjyh", "category": "A股", "orgId": "9900003642", "zwjc": "北京银行"},
+    "601818": {"code": "601818", "pinyin": "gdyh", "category": "A股", "orgId": "9900006246", "zwjc": "光大银行"},
+    "601916": {"code": "601916", "pinyin": "zsyh", "category": "A股", "orgId": "9900007207", "zwjc": "浙商银行"}
+  }
+}
