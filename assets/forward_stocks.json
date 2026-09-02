@@ -1,0 +1,8 @@
+{
+  "szse": {
+    "600900": {"code": "600900", "pinyin": "cjdl", "category": "A股", "orgId": "gssh0600900", "zwjc": "长江电力"},
+    "600941": {"code": "600941", "pinyin": "zgyd", "category": "A股", "orgId": "gshk0000941", "zwjc": "中国移动"},
+    "601318": {"code": "601318", "pinyin": "zgpa", "category": "A股", "orgId": "9900002221", "zwjc": "中国平安"},
+    "601728": {"code": "601728", "pinyin": "zgdx", "category": "A股", "orgId": "gshk0000728", "zwjc": "中国电信"}
+  }
+}

@@ -1,6 +1,6 @@
 ---
 name: ahongli
-description: Use when screening the latest CSI 300 constituents for quality-dividend candidates with long-term yield persistence, structured profitability and cash-flow gates, structured main-business property exclusion, separate bank/other-financial/nonfinancial factor scoring, and auditable Top10 CSV/Markdown/HTML output.
+description: Use when screening the latest CSI 300 constituents for quality-dividend candidates with auditable hard gates and separate bank/financial/nonfinancial scoring, or when adding evidence-backed forward DPS and target-yield analysis to the resulting formal Top10.
 ---
 
 # AHongli Dividend Strategy
@@ -159,3 +159,23 @@ Write under `a_dividend_outputs/{YYYYMMDD}/`:
 Every rejected row needs a specific non-empty reason. Distinguish `data_gap`, `hard_gate_failed`, and `selected`. Show raw gate values, profile source, main business, factor percentiles, weighted contributions, data periods, sources, and quality. Report stage counts: 300 total, market passers, structured passers, and final selections.
 
 Legacy price, current-yield, persistence-ratio, text-safety, dividend-financing, execution-composite, company-quality, and real-estate-relevance scores must not affect the total.
+
+## Optional Forward-Dividend Analysis
+
+Read [docs/forward-dividend-evidence-proposal.md](docs/forward-dividend-evidence-proposal.md) before changing the forward evidence, model, valuation, status, or output contracts.
+
+The forward stage is a separate transaction that consumes an already-written formal Top10. It must never change the formal candidates CSV, Top10 CSV, ranks, scores, gates, or factor contributions. Run it after the formal strategy:
+
+```bash
+python3 scripts/run_forward_dividend_analysis.py \
+  --run-date YYYYMMDD \
+  --top10 a_dividend_outputs/YYYYMMDD/hs300-dividend-top10-YYYYMMDD.csv
+```
+
+After the run status, the command prints a compact A-share Top10 main table to stdout with only the formal rank, company, score, A-share quote, base forecast DPS, expected yield, target position, and target-yield range. The persisted CSV and per-company detail remain the auditable sources of truth for model inputs, DPS scenarios, target prices, evidence completeness, and uncertainty.
+
+Use `--skip-prepare` only when every applicable Top10 evidence directory already contains a validated `forecast-evidence.json`. Forward results use independent `announced`, `modelled`, `data_gap`, `unsupported`, and `failed` states. Missing or unsupported forecasts keep numeric columns empty and retain the original formal rank and score.
+
+The forward stage writes separate CSV, Markdown, HTML, run-status, source, fact, event, result, and per-company evidence artifacts. Derive the target-yield range as required total return minus sustainable dividend growth, using a dated risk-free rate and versioned industry risk/growth parameters. Never infer the target range from current price, current yield, or historical yield percentiles. Display only neutral target-position labels; the corresponding target-price range is a mechanical DPS/yield conversion, not intrinsic value or an investment instruction.
+
+AHongli is an A-share strategy. Forward outputs must use the formal `.SH` / `.SZ` instrument, A-share pre-tax DPS, and CNY quote/dividend currency. Never mix H-share or HKD dividends into A-share forward yield or twelve-month eligible DPS. Consolidated profit may use all ordinary shares as the forecast denominator when the distribution applies to all ordinary shares, but record that explicitly as `forecast_share_denominator_scope=all_ordinary_shares`.

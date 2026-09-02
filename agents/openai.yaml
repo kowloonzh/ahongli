@@ -1,4 +1,4 @@
 interface:
   display_name: "AHongli 红利策略"
-  short_description: "沪深300长期股息率、结构化财务与银行专项筛选"
-  default_prompt: "Use $ahongli to screen CSI 300 constituents with separate bank, other-financial, and nonfinancial models; refresh required structured evidence, explain every rejection, and produce auditable Chinese CSV, Markdown, and HTML outputs."
+  short_description: "沪深300质量红利筛选、银行专项模型与可审计前瞻DPS分析"
+  default_prompt: "Use $ahongli to run the formal CSI 300 quality-dividend screen and add evidence-backed forward DPS analysis for the resulting Top10."

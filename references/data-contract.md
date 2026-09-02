@@ -47,3 +47,13 @@ Optional extensions include attention-loan, overdue-loan, real-estate NPL, and p
 `bank_quality_metrics.csv` must contain exactly the latest three audited annual periods for every market-preflight bank. A bank with incomplete rows cannot enter a formal run. Parsed source paths and evidence remain in the cache; the candidate CSV carries the latest raw metrics, three-year changes, gate result, composite percentiles, and weighted contributions.
 
 When the cache is missing or incomplete, the runner prepares it automatically from original CNinfo annual reports available by `run_date`. Reuse the shared `_bank_report_cache` for PDFs and extracted text, but rebuild the run-date CSV and revalidate exact bank-code and three-year coverage before scoring.
+
+## Independent Forward-Dividend Outputs
+
+The optional forward stage consumes only the already-written formal Top10 and writes independent `hs300-dividend-forward-*` outputs. It must preserve the formal Top10 SHA-256 and mtime for the whole transaction.
+
+Forward numeric columns are numeric or empty; status text never replaces missing numbers. Per-company status is one of `announced`, `modelled`, `data_gap`, `unsupported`, or `failed`. Evidence completeness and forecast uncertainty are separate fields.
+
+Every non-empty forecast must reference original source documents, page evidence, normalized facts, dividend events, a model ID/version, and explicit assumptions. Target-yield outputs must retain the dated risk-free rate, risk-spread range, sustainable-growth input, model ID/version, and mechanically derived target-price range. Historical yield percentiles are not part of the forward-output contract.
+
+All forward instruments are A shares. Require `.SH` / `.SZ`, `share_class=A`, `quote_currency=CNY`, and `dividend_currency=CNY`. Mixed A/H disclosures must select explicit A-share pre-tax CNY DPS; H-share or HKD-only events are ineligible. When consolidated profit and payout apply to all ordinary shares, record `forecast_share_denominator_scope=all_ordinary_shares` instead of describing the denominator as A-share capital.
