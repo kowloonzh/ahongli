@@ -38,6 +38,8 @@ class RunForwardDividendAnalysisTest(unittest.TestCase):
                 "expected_dividend_yield": 0.036,
                 "target_yield_low": 0.04,
                 "target_yield_high": 0.05,
+                "target_price_low": 18.0,
+                "target_price_high": 22.5,
                 "target_display_label": "进入目标区间",
                 "forecast_method": "policy_derived",
                 "evidence_completeness": "complete",
@@ -59,9 +61,9 @@ class RunForwardDividendAnalysisTest(unittest.TestCase):
         result = module.format_console_top10(rows, run_date="20260902")
 
         self.assertIn("AHongli A股前瞻Top10 20260902", result)
-        self.assertIn("排名 | 公司 | 得分 | 股价 | 预期分红 | 预期股息率 | 当前位置 | 目标股息率区间", result)
-        self.assertIn("1 | 示例公司 | 80.00 | 25.00 | 0.9000 | 3.60% | 进入目标区间 | 4.00%–5.00%", result)
-        self.assertIn("2 | 缺口公司 | 75.00 | 18.00 | — | — | 暂不判断 | 6.00%–8.00%", result)
+        self.assertIn("排名 | 公司 | 得分 | 股价 | 预期分红 | 预期股息率 | 当前位置 | 目标股息率区间 | 目标价格区间", result)
+        self.assertIn("1 | 示例公司 | 80.00 | 25.00 | 0.9000 | 3.60% | 进入目标区间 | 4.00%–5.00% | 18.00–22.50", result)
+        self.assertIn("2 | 缺口公司 | 75.00 | 18.00 | — | — | 暂不判断 | 6.00%–8.00% | —", result)
         self.assertNotIn("DPS低/基准/高", result)
         self.assertNotIn("P25", result)
 

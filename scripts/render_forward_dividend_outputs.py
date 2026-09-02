@@ -69,6 +69,13 @@ def _percent(value: Any, *, stored_as_ratio: bool = True) -> str:
     return f"{number:.2f}%"
 
 
+def _display_range(low: Any, high: Any, *, percent: bool = False) -> str:
+    if low in {None, ""} or high in {None, ""}:
+        return "—"
+    formatter = _percent if percent else _number
+    return f"{formatter(low)}–{formatter(high)}"
+
+
 def _write_detail(
     row: dict[str, Any],
     detail_path: Path,
@@ -110,8 +117,8 @@ def _write_detail(
         "## 预期股息率与目标区间",
         "",
         f"- 预期股息率：{_percent(row.get('expected_dividend_yield'))}",
-        f"- 目标股息率区间：{_percent(row.get('target_yield_low'))}–{_percent(row.get('target_yield_high'))}",
-        f"- 目标价格区间：{_number(row.get('target_price_low'))}–{_number(row.get('target_price_high'))}",
+        f"- 目标股息率区间：{_display_range(row.get('target_yield_low'), row.get('target_yield_high'), percent=True)}",
+        f"- 目标价格区间：{_display_range(row.get('target_price_low'), row.get('target_price_high'))}",
         f"- 当前位置：{row.get('target_display_label', '暂不判断')}",
         f"- 要求总回报率：{_percent(row.get('required_return_low'))}–{_percent(row.get('required_return_high'))}",
         f"- 可持续分红增长率：{_percent(row.get('sustainable_dividend_growth'))}",
@@ -202,16 +209,19 @@ def render_forward_dividend_outputs(
         "",
         "前瞻分红严格后置，不改变正式排名和综合得分。目标股息率由要求总回报率减可持续分红增长率得到，不是投资建议。",
         "",
-        "| 排名 | 公司 | 得分 | 股价 | 预期分红 | 预期股息率 | 当前位置 | 目标股息率区间 |",
-        "|---:|---|---:|---:|---:|---:|---|---:|",
+        "| 排名 | 公司 | 得分 | 股价 | 预期分红 | 预期股息率 | 当前位置 | 目标股息率区间 | 目标价格区间 |",
+        "|---:|---|---:|---:|---:|---:|---|---:|---:|",
     ]
     for row in ordered:
-        target_yield = f"{_percent(row.get('target_yield_low'))}–{_percent(row.get('target_yield_high'))}"
+        target_yield = _display_range(
+            row.get("target_yield_low"), row.get("target_yield_high"), percent=True
+        )
+        target_price = _display_range(row.get("target_price_low"), row.get("target_price_high"))
         md.append(
             f"| {row.get('rank','')} | [{row.get('name','')}]({row.get('evidence_detail_path','')}) | "
             f"{_number(row.get('dividend_score_total'))} | {_number(row.get('quote_price'))} | "
             f"{_number(row.get('forecast_fy_regular_dps_base'), 4)} | {_percent(row.get('expected_dividend_yield'))} | "
-            f"{row.get('target_display_label') or '暂不判断'} | {target_yield} |"
+            f"{row.get('target_display_label') or '暂不判断'} | {target_yield} | {target_price} |"
         )
     _atomic_write(markdown_path, "\n".join(md) + "\n")
 
@@ -227,7 +237,8 @@ def render_forward_dividend_outputs(
             f"<td>{_number(row.get('forecast_fy_regular_dps_base'),4)}</td>"
             f"<td>{_percent(row.get('expected_dividend_yield'))}</td>"
             f"<td>{html.escape(str(row.get('target_display_label') or '暂不判断'))}</td>"
-            f"<td>{_percent(row.get('target_yield_low'))}–{_percent(row.get('target_yield_high'))}</td>"
+            f"<td>{_display_range(row.get('target_yield_low'), row.get('target_yield_high'), percent=True)}</td>"
+            f"<td>{_display_range(row.get('target_price_low'), row.get('target_price_high'))}</td>"
             "</tr>"
         )
     document = f"""<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'>
@@ -235,7 +246,7 @@ def render_forward_dividend_outputs(
 body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#f5f7fa;color:#172033}}header,main{{padding:24px 32px}}header{{background:#12344d;color:#fff}}table{{width:100%;border-collapse:collapse;background:#fff}}th,td{{padding:9px;border-bottom:1px solid #e5e7eb;font-size:12px;text-align:left}}th{{background:#eef3f7}}a{{color:#0b63a5}}small{{color:#64748b}}
 </style></head><body><header><h1>AHongli 前瞻分红观察表</h1><p>{html.escape(run_date)}｜正式排名与得分不变</p></header><main>
 <p>目标股息率区间用于统一观察投入门槛；证据和计算过程保存在公司详情页。</p>
-<table><thead><tr><th>排名</th><th>公司</th><th>得分</th><th>股价</th><th>预期分红</th><th>预期股息率</th><th>当前位置</th><th>目标股息率区间</th></tr></thead><tbody>{''.join(body)}</tbody></table>
+<table><thead><tr><th>排名</th><th>公司</th><th>得分</th><th>股价</th><th>预期分红</th><th>预期股息率</th><th>当前位置</th><th>目标股息率区间</th><th>目标价格区间</th></tr></thead><tbody>{''.join(body)}</tbody></table>
 </main></body></html>"""
     _atomic_write(html_path, document)
 

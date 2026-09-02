@@ -42,19 +42,26 @@ def _console_percent(value: Any, *, stored_as_ratio: bool = True) -> str:
 def format_console_top10(rows: list[dict[str, Any]], *, run_date: str) -> str:
     lines = [
         f"AHongli A股前瞻Top10 {run_date}",
-        "排名 | 公司 | 得分 | 股价 | 预期分红 | 预期股息率 | 当前位置 | 目标股息率区间",
-        "--- | --- | ---: | ---: | ---: | ---: | --- | ---:",
+        "排名 | 公司 | 得分 | 股价 | 预期分红 | 预期股息率 | 当前位置 | 目标股息率区间 | 目标价格区间",
+        "--- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---:",
     ]
     for row in sorted(rows, key=lambda item: int(item.get("rank") or 10_000)):
         target_yield = (
             f"{_console_percent(row.get('target_yield_low'))}–"
             f"{_console_percent(row.get('target_yield_high'))}"
         )
+        target_price = (
+            f"{_console_number(row.get('target_price_low'))}–"
+            f"{_console_number(row.get('target_price_high'))}"
+            if row.get("target_price_low") not in {None, ""}
+            and row.get("target_price_high") not in {None, ""}
+            else "—"
+        )
         lines.append(
             f"{row.get('rank','')} | {row.get('name','')} | {_console_number(row.get('dividend_score_total'))} | "
             f"{_console_number(row.get('quote_price'))} | {_console_number(row.get('forecast_fy_regular_dps_base'), 4)} | "
             f"{_console_percent(row.get('expected_dividend_yield'))} | "
-            f"{row.get('target_display_label') or '暂不判断'} | {target_yield}"
+            f"{row.get('target_display_label') or '暂不判断'} | {target_yield} | {target_price}"
         )
     return "\n".join(lines)
 
