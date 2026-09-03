@@ -490,6 +490,31 @@ class ForwardDividendEvidenceTest(unittest.TestCase):
         self.assertEqual(result["official_payout_floor"]["source_document_id"], "POL-1")
         self.assertEqual(result["official_payout_floor"]["raw_evidence"], text)
 
+    def test_three_year_telecom_policy_resolves_explicit_validity_window(self):
+        module = load_script("parse_forward_dividend_evidence")
+        text = "公司从2024年起，三年内以现金方式分配的利润逐步提升至当年股东应占利润的75%以上。"
+
+        result = module.parse_policy_facts(
+            text,
+            source={"announcement_id": "TEL-POLICY", "source_file": "TEL.pdf", "page": 68},
+            ts_code="601728.SH",
+        )
+
+        floor = result["official_payout_floor"]
+        self.assertEqual(floor["value"], 0.75)
+        self.assertEqual((floor["valid_from"], floor["valid_to"]), (2024, 2026))
+
+    def test_historical_payout_increase_without_future_window_is_not_a_policy_floor(self):
+        module = load_script("parse_forward_dividend_evidence")
+
+        result = module.parse_policy_facts(
+            "2025年经营稳中向好，现金分红率提升至35%。",
+            source={"announcement_id": "CMB-ANNUAL", "source_file": "CMB.pdf", "page": 5},
+            ts_code="600036.SH",
+        )
+
+        self.assertNotIn("official_payout_floor", result)
+
     def test_financial_fact_parser_preserves_units_period_and_source(self):
         module = load_script("parse_forward_dividend_evidence")
         text = (
@@ -525,6 +550,23 @@ class ForwardDividendEvidenceTest(unittest.TestCase):
         self.assertEqual(result["net_profit_parent"]["value"], 17_000_000_000.0)
         self.assertEqual(result["net_profit_parent_prior_comparable"]["value"], 15_000_000_000.0)
         self.assertEqual(result["net_profit_parent_prior_comparable"]["period"], "20250630")
+
+    def test_profit_parser_does_not_treat_payout_percent_as_prior_profit(self):
+        module = load_script("parse_forward_dividend_evidence")
+        text = (
+            "按照2026年中期归属于公司股东的净利润人民币195.88亿元的75%向全体股东分配股息，"
+            "合计人民币约146.96亿元。"
+        )
+
+        result = module.parse_financial_facts(
+            text,
+            source={"announcement_id": "TEL-H1", "source_file": "TEL-H1.pdf", "page": 2},
+            ts_code="601728.SH",
+            period="20260630",
+        )
+
+        self.assertEqual(result["net_profit_parent"]["value"], 19_588_000_000.0)
+        self.assertNotIn("net_profit_parent_prior_comparable", result)
 
     def test_insurance_operating_profit_is_a_separate_fact(self):
         module = load_script("parse_forward_dividend_evidence")
@@ -690,6 +732,27 @@ class ForwardDividendEvidenceTest(unittest.TestCase):
         )
 
         self.assertEqual(result["cash_dividend_per_share_pre_tax"], 1.522)
+
+    def test_full_year_total_is_not_mislabeled_as_incremental_final_dividend(self):
+        module = load_script("parse_forward_dividend_evidence")
+        text = (
+            "全年现金股息总额人民币1,016.84亿元（每股现金股息人民币0.3887元（含税））；"
+            "扣除中期现金股息每股人民币0.1858元后，向股东派发末期现金股息。"
+        )
+
+        result = module.parse_dividend_event(
+            text,
+            source={
+                "announcement_id": "CCB-IMPL",
+                "logical_role": "implementation",
+                "source_title": "建设银行2025年度A股分红派息实施公告",
+            },
+            ts_code="601939.SH",
+            fiscal_period="20251231",
+        )
+
+        self.assertEqual(result["cash_dividend_per_share_pre_tax"], 0.3887)
+        self.assertEqual(result["distribution_phase"], "full_year")
 
     def test_mixed_share_class_announcement_uses_a_share_cny_dps(self):
         module = load_script("parse_forward_dividend_evidence")

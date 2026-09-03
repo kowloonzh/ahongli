@@ -56,4 +56,6 @@ Forward numeric columns are numeric or empty; status text never replaces missing
 
 Every non-empty forecast must reference original source documents, page evidence, normalized facts, dividend events, a model ID/version, and explicit assumptions. Target-yield outputs must retain the dated risk-free rate, risk-spread range, sustainable-growth input, model ID/version, and mechanically derived target-price range. Historical yield percentiles are not part of the forward-output contract.
 
+Persist `forecast_payout_ratio_low`, `forecast_payout_ratio`, and `forecast_payout_ratio_high` separately when payout assumptions vary by scenario. Complete-year payout facts exclude interim periods and historical footnotes assigned to another year. A `full_year` dividend event supersedes arithmetic addition of its component interim and final events for annual payout reconstruction.
+
 All forward instruments are A shares. Require `.SH` / `.SZ`, `share_class=A`, `quote_currency=CNY`, and `dividend_currency=CNY`. Mixed A/H disclosures must select explicit A-share pre-tax CNY DPS; H-share or HKD-only events are ineligible. When consolidated profit and payout apply to all ordinary shares, record `forecast_share_denominator_scope=all_ordinary_shares` instead of describing the denominator as A-share capital.

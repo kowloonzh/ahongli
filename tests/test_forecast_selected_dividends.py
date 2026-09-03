@@ -328,8 +328,80 @@ class ForecastSelectedDividendsTest(unittest.TestCase):
 
         self.assertEqual(result[0]["forecast_status"], "modelled")
         self.assertEqual(result[0]["forecast_method"], "historical_payout")
-        self.assertEqual(result[0]["model_id"], "insurance_operating_profit_historical_payout_v1")
+        self.assertEqual(result[0]["model_id"], "insurance_operating_profit_historical_payout_v2")
         self.assertEqual(result[0]["forecast_uncertainty"], "high")
+
+    def test_insurance_uses_consensus_full_year_payouts_and_ignores_interim_footnote(self):
+        module = load_module()
+        top = [{
+            "rank": 1, "ts_code": "601318.SH", "name": "中国平安",
+            "industry": "保险", "selected": "是", "dividend_score_total": 82.62,
+        }]
+        payout_facts = []
+        for period, consensus, count in [
+            ("20231231", 0.373, 3), ("20241231", 0.379, 3), ("20251231", 0.364, 2)
+        ]:
+            payout_facts.extend(
+                {"fact_id": f"{period}-{index}", "fact_type": "historical_payout_ratio", "period": period, "value": consensus}
+                for index in range(count)
+            )
+            payout_facts.append({
+                "fact_id": f"{period}-footnote", "fact_type": "historical_payout_ratio",
+                "period": period, "value": 0.298, "raw_evidence": "2022年经重述为29.8%",
+            })
+        payout_facts.append({
+            "fact_id": "20260630-footnote", "fact_type": "historical_payout_ratio",
+            "period": "20260630", "value": 0.298,
+        })
+        evidence = {"601318.SH": {"normalized_facts": [
+            {"fact_id": "OP-FY", "fact_type": "operating_profit_parent", "period": "20251231", "value": 134_415_000_000.0},
+            {"fact_id": "OP-H1", "fact_type": "operating_profit_parent", "period": "20260630", "value": 84_196_000_000.0},
+            {"fact_id": "OP-PRIOR", "fact_type": "operating_profit_parent_prior_comparable", "period": "20250630", "value": 77_732_000_000.0},
+            {"fact_id": "SHARES", "fact_type": "total_shares", "period": "20260630", "value": 18_107_641_995.0},
+            *payout_facts,
+        ], "dividend_events": []}}
+
+        result = module.forecast_selected_dividends(
+            top_rows=top, evidence_by_code=evidence, run_date="20260902"
+        )
+
+        self.assertAlmostEqual(result[0]["forecast_payout_ratio"], 0.373)
+        self.assertAlmostEqual(result[0]["forecast_fy_regular_dps_base"], 2.9019718312583085)
+        self.assertEqual(result[0]["model_id"], "insurance_operating_profit_historical_payout_v2")
+        self.assertEqual(result[0]["model_version"], "2")
+
+    def test_bank_policy_floor_is_low_scenario_and_recent_actual_payout_is_base(self):
+        module = load_module()
+        top = [{
+            "rank": 1, "ts_code": "600036.SH", "name": "招商银行",
+            "industry": "银行", "selected": "是", "dividend_score_total": 72.83,
+            "is_bank": "是", "bank_quality_gate_passed": "是",
+            "bank_core_tier1_capital_ratio": 14.16, "bank_tier1_capital_ratio": 15.2,
+            "bank_capital_adequacy_ratio": 18.24,
+        }]
+        evidence = {"600036.SH": {"normalized_facts": [
+            {"fact_id": "FY", "fact_type": "net_profit_parent", "period": "20251231", "value": 150.0},
+            {"fact_id": "H1", "fact_type": "net_profit_parent", "period": "20260630", "value": 76.0},
+            {"fact_id": "PRIOR", "fact_type": "net_profit_parent_prior_comparable", "period": "20250630", "value": 75.0},
+            {"fact_id": "SHARES", "fact_type": "total_shares", "period": "20260630", "value": 100.0},
+            {"fact_id": "FLOOR", "fact_type": "official_payout_floor", "period": "20251231", "value": 0.30},
+            {"fact_id": "P23", "fact_type": "historical_payout_ratio", "period": "20231231", "value": 0.3501},
+            {"fact_id": "P24", "fact_type": "historical_payout_ratio", "period": "20241231", "value": 0.3532},
+            {"fact_id": "P25", "fact_type": "historical_payout_ratio", "period": "20251231", "value": 0.3534},
+        ], "dividend_events": []}}
+
+        result = module.forecast_selected_dividends(
+            top_rows=top, evidence_by_code=evidence, run_date="20260902"
+        )
+
+        self.assertEqual(result[0]["forecast_method"], "policy_and_history")
+        self.assertEqual(result[0]["model_id"], "bank_policy_history_capital_v1")
+        self.assertAlmostEqual(result[0]["forecast_payout_ratio_low"], 0.30)
+        self.assertAlmostEqual(result[0]["forecast_payout_ratio"], 0.3532)
+        self.assertAlmostEqual(result[0]["forecast_payout_ratio_high"], 0.3534)
+        self.assertAlmostEqual(result[0]["forecast_fy_regular_dps_low"], 0.45)
+        self.assertAlmostEqual(result[0]["forecast_fy_regular_dps_base"], 0.533332)
+        self.assertAlmostEqual(result[0]["forecast_fy_regular_dps_high"], 0.537168)
 
     def test_historical_payout_can_be_recomputed_from_events_shares_and_profit(self):
         module = load_module()

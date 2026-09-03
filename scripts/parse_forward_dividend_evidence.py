@@ -85,7 +85,24 @@ def parse_dividend_event(
     base_shares = int(base_match.group(1).replace(",", "")) if base_match else None
     regular_or_special = "special" if "特别" in text else "regular"
     title = str(source.get("source_title") or "")
-    if any(token in title for token in ["半年度", "中期"]):
+    full_year_clauses = re.findall(r"全年[^。；]{0,200}", compact)
+    is_full_year_total = False
+    for clause in full_year_clauses:
+        clause_per_ten = re.search(per_ten_pattern, clause)
+        clause_per_share = re.search(per_share_pattern, clause)
+        clause_dps = (
+            float(clause_per_ten.group(1)) / 10.0
+            if clause_per_ten
+            else float(clause_per_share.group(1))
+            if clause_per_share
+            else None
+        )
+        if clause_dps is not None and abs(clause_dps - dps) < 1e-10:
+            is_full_year_total = True
+            break
+    if is_full_year_total:
+        distribution_phase = "full_year"
+    elif any(token in title for token in ["半年度", "中期"]):
         distribution_phase = "interim"
     elif any(token in title for token in ["末期", "末次"]):
         distribution_phase = "final"
@@ -170,11 +187,18 @@ def parse_policy_facts(
     ts_code: str,
 ) -> dict[str, Any]:
     period = re.search(r"(20\d{2})\s*年?至\s*(20\d{2})\s*年", text)
+    duration = re.search(r"从\s*(20\d{2})\s*年起[，,]?\s*([一二三四五六七八九十\d]+)\s*年内", text)
     ratio = re.search(
-        r"(?:现金分红比例|现金分红)[^。；%]{0,40}?(?:不低于|至少|达到)"
+        r"(?:以现金方式分配的利润|现金分红比例|现金分红)[^。；%]{0,100}?(?:不低于|至少)"
         r"[^0-9]{0,12}([0-9]+(?:\.[0-9]+)?)\s*%",
         text,
     )
+    if ratio is None and (period or duration):
+        ratio = re.search(
+            r"(?:以现金方式分配的利润|现金分红比例|现金分红)[^。；%]{0,100}?(?:达到|提升至)"
+            r"[^0-9]{0,12}([0-9]+(?:\.[0-9]+)?)\s*%",
+            text,
+        )
     if ratio is None:
         ratio = re.search(
             r"(?:不低于|至少)[^。；%]{0,80}?([0-9]+(?:\.[0-9]+)?)\s*%[^。；]{0,30}现金分红",
@@ -188,8 +212,16 @@ def parse_policy_facts(
     facts: dict[str, Any] = {"ts_code": ts_code}
     if ratio or (stable_future and prior_rate):
         value = float(ratio.group(1) if ratio else prior_rate.group(1)) / 100.0
-        valid_from = int(period.group(1)) if period else int(stable_future.group(1)) if stable_future else None
-        valid_to = int(period.group(2)) if period else valid_from
+        if period:
+            valid_from, valid_to = int(period.group(1)), int(period.group(2))
+        elif duration:
+            chinese_numbers = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+            years = chinese_numbers.get(duration.group(2), int(duration.group(2)) if duration.group(2).isdigit() else 0)
+            valid_from = int(duration.group(1))
+            valid_to = valid_from + years - 1
+        else:
+            valid_from = int(stable_future.group(1)) if stable_future else None
+            valid_to = valid_from
         facts["official_payout_floor"] = {
             "value": round(value, 8),
             "unit": "ratio",
@@ -267,7 +299,10 @@ def _extract_metric_series(text: str, labels: list[str]) -> tuple[list[float], s
         combined = " ".join(lines[index : index + 3])
         segment = combined.split(label, 1)[1]
         value_segment = re.split(r"同比|较上年|增长|下降", segment, maxsplit=1)[0]
+        value_segment = re.sub(r"[+-]?[0-9][0-9,]*(?:\.[0-9]+)?\s*%", "", value_segment)
         numbers = re.findall(r"[+-]?[0-9][0-9,]*(?:\.[0-9]+)?", value_segment)
+        if any(token in value_segment for token in ["分配股息", "派发股息", "现金分红", "合计"]):
+            numbers = numbers[:1]
         multiplier = _metric_multiplier(combined, text)
         if not numbers or multiplier is None:
             continue

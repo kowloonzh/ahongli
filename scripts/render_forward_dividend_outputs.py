@@ -29,7 +29,8 @@ FORWARD_FIELDS = [
     "target_yield_basis",
     "forecast_method", "model_id", "model_version", "evidence_completeness",
     "forecast_uncertainty", "forecast_status", "forecast_reason", "forecast_profit",
-    "forecast_payout_ratio", "forecast_total_shares", "announced_dividend_floor",
+    "forecast_payout_ratio_low", "forecast_payout_ratio", "forecast_payout_ratio_high",
+    "forecast_total_shares", "announced_dividend_floor",
     "special_dividend_excluded", "forecast_input_fact_ids", "forecast_input_event_ids",
     "evidence_detail_path",
 ]
@@ -99,6 +100,8 @@ def _write_detail(
         f"- 低：{_number(row.get('forecast_fy_regular_dps_low'), 4)}",
         f"- 基准：{_number(row.get('forecast_fy_regular_dps_base'), 4)}",
         f"- 高：{_number(row.get('forecast_fy_regular_dps_high'), 4)}",
+        f"- 派息率低/基准/高：{_percent(row.get('forecast_payout_ratio_low'))} / "
+        f"{_percent(row.get('forecast_payout_ratio'))} / {_percent(row.get('forecast_payout_ratio_high'))}",
     ]
     if all(row.get(field) not in {None, ""} for field in ["forecast_profit", "forecast_payout_ratio", "forecast_total_shares"]):
         lines.extend(

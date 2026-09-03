@@ -54,7 +54,9 @@ class RenderForwardDividendOutputsTest(unittest.TestCase):
                 "forecast_status": "modelled",
                 "forecast_reason": "正式政策与TTM利润",
                 "forecast_profit": 100.0,
+                "forecast_payout_ratio_low": 0.25,
                 "forecast_payout_ratio": 0.30,
+                "forecast_payout_ratio_high": 0.35,
                 "forecast_total_shares": 100.0,
                 "forecast_input_fact_ids": ["F1"],
                 "forecast_input_event_ids": ["E1"],
@@ -111,6 +113,7 @@ class RenderForwardDividendOutputsTest(unittest.TestCase):
             detail = Path(tmp) / csv_rows[0]["evidence_detail_path"]
             detail_text = detail.read_text(encoding="utf-8")
             self.assertIn("100.00 × 30.00% ÷ 100.00", detail_text)
+            self.assertIn("派息率低/基准/高：25.00% / 30.00% / 35.00%", detail_text)
             self.assertIn("要求总回报率", detail_text)
             self.assertIn("目标价格区间", detail_text)
             self.assertIn("年度报告", detail_text)

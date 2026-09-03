@@ -73,6 +73,67 @@ def _derived_payout_ratios(
     return ratios
 
 
+def _historical_payout_profile(
+    evidence: dict[str, Any],
+    *,
+    profit_fact_type: str,
+) -> tuple[list[str], list[float], list[str], list[str]]:
+    documents = {
+        str(document.get("announcement_id") or ""): document
+        for document in evidence.get("source_documents", [])
+    }
+    candidates_by_period: dict[str, list[dict[str, Any]]] = {}
+    for fact in _facts(evidence, "historical_payout_ratio"):
+        period = str(fact.get("period") or "")
+        value = float(fact["value"])
+        if not period.endswith("1231") or not 0 < value < 1:
+            continue
+        candidates_by_period.setdefault(period, []).append(fact)
+
+    selected_values: dict[str, float] = {}
+    selected_fact_ids: dict[str, list[str]] = {}
+    for period, facts in candidates_by_period.items():
+        def priority(fact: dict[str, Any]) -> int:
+            document = documents.get(str(fact.get("source_document_id") or ""), {})
+            title = str(document.get("source_title") or "")
+            role = str(document.get("logical_role") or "")
+            if role == "dividend_plan" and "年度" in title and not any(token in title for token in ["半年度", "中期"]):
+                return 3
+            if role == "annual":
+                return 2
+            return 1
+
+        highest_priority = max(priority(fact) for fact in facts)
+        preferred = [fact for fact in facts if priority(fact) == highest_priority]
+        counts = Counter(float(fact["value"]) for fact in preferred)
+        highest_count = max(counts.values())
+        consensus = max(value for value, count in counts.items() if count == highest_count)
+        selected_values[period] = consensus
+        selected_fact_ids[period] = [
+            str(fact["fact_id"])
+            for fact in preferred
+            if float(fact["value"]) == consensus and fact.get("fact_id")
+        ]
+
+    derived = _derived_payout_ratios(evidence, profit_fact_type=profit_fact_type)
+    for period, value in derived.items():
+        selected_values.setdefault(period, value)
+
+    selected_periods = sorted(selected_values)[-3:]
+    values = [selected_values[period] for period in selected_periods]
+    fact_ids = [
+        fact_id
+        for period in selected_periods
+        for fact_id in selected_fact_ids.get(period, [])
+    ]
+    event_ids = [
+        str(event["event_id"])
+        for event in evidence.get("dividend_events", [])
+        if str(event.get("fiscal_period") or "") in selected_periods and event.get("event_id")
+    ]
+    return selected_periods, values, fact_ids, event_ids
+
+
 def _model_facts(
     evidence: dict[str, Any],
     run_date: str,
@@ -181,40 +242,27 @@ def _model_facts(
             input_fact_ids.append(str(policy["fact_id"]))
     is_bank = _truthy((company or {}).get("is_bank")) or "银行" in str((company or {}).get("industry") or "")
     is_insurance = "保险" in str((company or {}).get("industry") or "")
-    if "official_payout_ratio" not in result and (is_bank or is_insurance):
-        payout_facts = [
-            fact
-            for fact in _facts(evidence, "historical_payout_ratio")
-            if 0 < float(fact["value"]) < 1
-        ]
-        latest_by_period: dict[str, float] = {}
-        payout_fact_id_by_period: dict[str, str] = {}
-        for fact in payout_facts:
-            period_key = str(fact.get("period") or "")
-            latest_by_period[period_key] = float(fact["value"])
-            if fact.get("fact_id"):
-                payout_fact_id_by_period[period_key] = str(fact["fact_id"])
-        derived = _derived_payout_ratios(
+    if is_bank or is_insurance:
+        selected_periods, latest_values, payout_fact_ids, payout_event_ids = _historical_payout_profile(
             evidence,
             profit_fact_type="operating_profit_parent" if is_insurance else "net_profit_parent",
         )
-        for period, value in derived.items():
-            latest_by_period.setdefault(period, value)
-        selected_periods = sorted(latest_by_period)[-3:]
-        latest_values = [latest_by_period[period] for period in selected_periods]
         if len(latest_values) == 3:
-            result["official_payout_ratio"] = statistics.median(latest_values)
-            result["payout_method"] = "historical_payout"
-            input_fact_ids.extend(
-                payout_fact_id_by_period[period]
-                for period in selected_periods
-                if period in payout_fact_id_by_period
-            )
-            input_event_ids.extend(
-                str(event["event_id"])
-                for event in evidence.get("dividend_events", [])
-                if str(event.get("fiscal_period") or "") in selected_periods and event.get("event_id")
-            )
+            historical_median = statistics.median(latest_values)
+            if "official_payout_ratio" not in result:
+                result["official_payout_ratio"] = historical_median
+                result["payout_method"] = "historical_payout"
+            elif is_bank and historical_median > float(result["official_payout_ratio"]):
+                policy_floor = float(result["official_payout_ratio"])
+                result["payout_ratio_scenarios"] = {
+                    "low": policy_floor,
+                    "base": historical_median,
+                    "high": max(latest_values),
+                }
+                result["official_payout_ratio"] = historical_median
+                result["payout_method"] = "policy_and_history"
+            input_fact_ids.extend(payout_fact_ids)
+            input_event_ids.extend(payout_event_ids)
     result["evidence_completeness"] = "complete" if (
         "announced_regular_dps" in result
         or all(key in result for key in ["forecast_profit_scenarios", "forecast_total_shares", "official_payout_ratio"])

@@ -191,11 +191,11 @@ def forecast_company(
             "forecast_fy_regular_dps_high": dps["high"],
             "forecast_method": facts.get("payout_method", "policy_derived"),
             "model_id": (
-                "insurance_operating_profit_historical_payout_v1"
+                "insurance_operating_profit_historical_payout_v2"
                 if facts.get("payout_method") == "historical_payout"
                 else "insurance_operating_profit_policy_v1"
             ),
-            "model_version": "1",
+            "model_version": "2" if facts.get("payout_method") == "historical_payout" else "1",
             "evidence_completeness": facts.get("evidence_completeness", "complete"),
             "forecast_uncertainty": "high" if facts.get("payout_method") == "historical_payout" else "medium",
             "forecast_status": "modelled",
@@ -206,6 +206,8 @@ def forecast_company(
             ),
             "forecast_profit": facts["operating_profit_scenarios"]["base"],
             "forecast_payout_ratio": float(facts["official_payout_ratio"]),
+            "forecast_payout_ratio_low": float(facts["official_payout_ratio"]),
+            "forecast_payout_ratio_high": float(facts["official_payout_ratio"]),
             "forecast_total_shares": float(facts["forecast_total_shares"]),
             "forecast_input_fact_ids": facts.get("forecast_input_fact_ids", []),
             "forecast_input_event_ids": facts.get("forecast_input_event_ids", []),
@@ -236,11 +238,20 @@ def forecast_company(
                     "forecast_input_fact_ids": facts.get("forecast_input_fact_ids", []),
                     "forecast_input_event_ids": facts.get("forecast_input_event_ids", []),
                 }
-        dps = compute_dps_scenarios(
-            profit_scenarios=facts["forecast_profit_scenarios"],
-            payout_ratio=float(facts["official_payout_ratio"]),
-            forecast_total_shares=float(facts["forecast_total_shares"]),
-        )
+        payout_scenarios = facts.get("payout_ratio_scenarios")
+        if payout_scenarios:
+            dps = {
+                scenario: float(facts["forecast_profit_scenarios"][scenario])
+                * float(payout_scenarios[scenario])
+                / float(facts["forecast_total_shares"])
+                for scenario in ["low", "base", "high"]
+            }
+        else:
+            dps = compute_dps_scenarios(
+                profit_scenarios=facts["forecast_profit_scenarios"],
+                payout_ratio=float(facts["official_payout_ratio"]),
+                forecast_total_shares=float(facts["forecast_total_shares"]),
+            )
         return {
             "forecast_fiscal_year": facts.get("forecast_fiscal_year"),
             "forecast_fy_regular_dps_low": dps["low"],
@@ -248,6 +259,9 @@ def forecast_company(
             "forecast_fy_regular_dps_high": dps["high"],
             "forecast_method": facts.get("payout_method", "policy_derived"),
             "model_id": (
+                "bank_policy_history_capital_v1"
+                if is_bank and facts.get("payout_method") == "policy_and_history"
+                else
                 "bank_historical_payout_capital_v1"
                 if is_bank and facts.get("payout_method") == "historical_payout"
                 else "bank_profit_policy_capital_v1"
@@ -259,12 +273,17 @@ def forecast_company(
             "forecast_uncertainty": "medium",
             "forecast_status": "modelled",
             "forecast_reason": (
+                "正式派息下限作为低情景、三年实际派息率作为基准情景并检查资本约束"
+                if is_bank and facts.get("payout_method") == "policy_and_history"
+                else
                 "三年原始证据派息率中位数、可复算利润情景与资本约束"
                 if is_bank and facts.get("payout_method") == "historical_payout"
                 else "正式派息政策与可复算利润情景"
             ),
             "forecast_profit": facts["forecast_profit_scenarios"]["base"],
             "forecast_payout_ratio": float(facts["official_payout_ratio"]),
+            "forecast_payout_ratio_low": float(payout_scenarios["low"]) if payout_scenarios else float(facts["official_payout_ratio"]),
+            "forecast_payout_ratio_high": float(payout_scenarios["high"]) if payout_scenarios else float(facts["official_payout_ratio"]),
             "forecast_total_shares": float(facts["forecast_total_shares"]),
             "forecast_input_fact_ids": facts.get("forecast_input_fact_ids", []),
             "forecast_input_event_ids": facts.get("forecast_input_event_ids", []),
