@@ -73,6 +73,28 @@ class ForwardDividendModelsTest(unittest.TestCase):
         self.assertAlmostEqual(result["target_yield_low"], 0.04)
         self.assertAlmostEqual(result["target_yield_high"], 0.05)
 
+    def test_bank_target_yield_adds_half_point_to_lower_bound_only(self):
+        module = load_module()
+
+        result = module.target_yield_from_analysis(
+            company={
+                "ts_code": "600036.SH",
+                "industry": "银行",
+                "is_bank": "是",
+                "roe": 11.52,
+                "latest_payout_ratio": 0.3385,
+                "dps_cagr_5y": 0.07,
+            },
+            risk_free_rate=0.017,
+        )
+
+        self.assertAlmostEqual(result["sustainable_dividend_growth"], 0.03)
+        self.assertAlmostEqual(result["required_return_low"], 0.085)
+        self.assertAlmostEqual(result["required_return_high"], 0.10)
+        self.assertAlmostEqual(result["target_yield_low"], 0.055)
+        self.assertAlmostEqual(result["target_yield_high"], 0.07)
+        self.assertEqual(result["target_yield_model_version"], "2")
+
     def test_valuation_uses_target_yield_and_reports_decision_position(self):
         module = load_module()
 

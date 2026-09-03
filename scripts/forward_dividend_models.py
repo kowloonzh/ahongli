@@ -83,7 +83,7 @@ def target_yield_from_analysis(
         growth_floor, growth_cap = 0.02, 0.04
     elif "银行" in industry or _truthy(company.get("is_bank")):
         category = "bank"
-        spread_low, spread_high = 0.063, 0.083
+        spread_low, spread_high = 0.068, 0.083
         growth_floor, growth_cap = 0.02, 0.03
     elif "保险" in industry:
         category = "insurance"
@@ -114,7 +114,7 @@ def target_yield_from_analysis(
     target_high = _round_half_percent(max(target_low + 0.005, required_high - sustainable_growth))
     return {
         "target_yield_model_id": "required_return_minus_growth_v1",
-        "target_yield_model_version": "1",
+        "target_yield_model_version": "2",
         "target_yield_category": category,
         "risk_free_rate": risk_free_rate,
         "equity_and_company_risk_spread_low": spread_low,

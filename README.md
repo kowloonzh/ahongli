@@ -143,6 +143,8 @@ python3 scripts/run_forward_dividend_analysis.py \
 
 以上仅展示输出结构。要求总回报率、可持续分红增长率、DPS低/基准/高情景、预测依据和证据完整性保留在CSV及逐公司详情页。
 
+银行目标股息率区间的下限额外增加0.5个百分点安全边际，上限不变；例如 `5%–7%` 显示为 `5.5%–7%`。该调整不适用于保险、电信、公用事业或其他非银行公司。
+
 - `hs300-dividend-forward-top10-YYYYMMDD.csv`；
 - `hs300-dividend-forward-report-YYYYMMDD.md`；
 - `hs300-dividend-forward-dashboard-YYYYMMDD.html`；
