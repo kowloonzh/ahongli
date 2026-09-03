@@ -56,6 +56,8 @@ class ForecastSelectedDividendsTest(unittest.TestCase):
         self.assertEqual(result[0]["rank"], 2)
         self.assertEqual(result[0]["dividend_score_total"], 74.58)
         self.assertEqual(result[0]["forecast_profit"], 35_000_000_000.0)
+        self.assertEqual(result[0]["forecast_profit_low"], 33_000_000_000.0)
+        self.assertEqual(result[0]["forecast_profit_high"], 37_000_000_000.0)
         self.assertAlmostEqual(result[0]["forecast_fy_regular_dps_base"], 1.0012, places=4)
         self.assertEqual(result[0]["forecast_status"], "modelled")
         self.assertEqual(result[0]["instrument_ts_code"], "600900.SH")
@@ -369,6 +371,12 @@ class ForecastSelectedDividendsTest(unittest.TestCase):
         self.assertAlmostEqual(result[0]["forecast_fy_regular_dps_base"], 2.9019718312583085)
         self.assertEqual(result[0]["model_id"], "insurance_operating_profit_historical_payout_v2")
         self.assertEqual(result[0]["model_version"], "2")
+        payout_decision = next(
+            item for item in result[0]["forecast_selection_decisions"]
+            if item["selector"] == "historical_payout_ratio" and item["period"] == "20231231"
+        )
+        self.assertEqual(payout_decision["selected_value"], 0.373)
+        self.assertIn(0.298, payout_decision["candidate_values"])
 
     def test_bank_policy_floor_is_low_scenario_and_recent_actual_payout_is_base(self):
         module = load_module()

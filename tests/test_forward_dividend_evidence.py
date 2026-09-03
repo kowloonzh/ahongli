@@ -878,6 +878,10 @@ class ForwardDividendEvidenceTest(unittest.TestCase):
                 },
             )
             self.assertEqual(len(result["dividend_events"]), 1)
+            spans = {span["evidence_span_id"] for span in result["evidence_spans"]}
+            self.assertTrue(spans)
+            self.assertTrue(all(fact["evidence_span_id"] in spans for fact in result["normalized_facts"]))
+            self.assertTrue(all(span["raw_evidence"] for span in result["evidence_spans"]))
             self.assertTrue((root / "forecast-evidence.json").exists())
 
     def test_formal_future_policy_inside_annual_report_is_extracted(self):

@@ -149,11 +149,27 @@ python3 scripts/run_forward_dividend_analysis.py \
 - `hs300-dividend-forward-report-YYYYMMDD.md`；
 - `hs300-dividend-forward-dashboard-YYYYMMDD.html`；
 - `market_data/forward-dividend-run-status.json`；
+- `market_data/forward-dividend-replay-manifest.json`与版本化策略快照；
 - `market_data/forward_dividend_evidence/{ts_code}/`下的manifest、页级事实、事件和详情页。
 
 预测状态区分 `announced`、`modelled`、`data_gap`、`unsupported` 和 `failed`。证据不足时数值保持为空。目标股息率按“要求总回报率减可持续分红增长率”计算；目标价格、模型输入、DPS三情景和证据状态保留在CSV与详情页。
 
 AHongli只使用A股口径：证券代码为 `.SH` / `.SZ`，股价和DPS均为人民币。H股或港元股息不会混入A股前瞻DPS；证据无法转换为明确A股人民币口径时保留 `data_gap`。
+
+离线验证已有运行结果：
+
+```bash
+python3 scripts/forward_replay.py \
+  --manifest a_dividend_outputs/YYYYMMDD/market_data/forward-dividend-replay-manifest.json
+```
+
+实际年度DPS公布后，可准备包含 `ts_code,fiscal_year,actual_regular_dps` 的CSV并运行：
+
+```bash
+python3 scripts/evaluate_forecast_accuracy.py \
+  --forecasts a_dividend_outputs/YYYYMMDD/hs300-dividend-forward-top10-YYYYMMDD.csv \
+  --actuals actual-regular-dps.csv
+```
 
 ## 测试与校验
 

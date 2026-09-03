@@ -405,6 +405,11 @@ def _fact_record(
     *,
     ts_code: str,
 ) -> dict[str, Any]:
+    span_identity = (
+        f"{fact.get('source_document_id')}|{fact.get('source_page_or_location')}|"
+        f"{fact.get('raw_evidence')}|pdftotext-layout-regex-v1"
+    )
+    evidence_span_id = hashlib.sha256(span_identity.encode("utf-8")).hexdigest()[:24]
     identity = (
         f"{ts_code}|{fact_type}|{fact.get('period')}|{fact.get('source_document_id')}|"
         f"{fact.get('source_page_or_location')}|{fact.get('value')}|{fact.get('unit')}"
@@ -412,6 +417,7 @@ def _fact_record(
     return {
         "fact_id": hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24],
         "fact_type": fact_type,
+        "evidence_span_id": evidence_span_id,
         **fact,
     }
 
@@ -482,6 +488,19 @@ def parse_company_evidence(
                 if "单位" in line and any(unit in line for unit in ["元", "萬元", "百萬元", "亿元", "億元"])
             ]
             previous_unit_context = "\n".join(unit_lines[-3:])
+    evidence_spans_by_id: dict[str, dict[str, Any]] = {}
+    for fact in facts:
+        span_id = str(fact["evidence_span_id"])
+        evidence_spans_by_id.setdefault(
+            span_id,
+            {
+                "evidence_span_id": span_id,
+                "source_document_id": fact.get("source_document_id"),
+                "source_page_or_location": fact.get("source_page_or_location"),
+                "raw_evidence": fact.get("raw_evidence"),
+                "extraction_backend": "pdftotext-layout-regex-v1",
+            },
+        )
     result = {
         "ts_code": ts_code,
         "company_name": manifest.get("company_name", ""),
@@ -489,6 +508,7 @@ def parse_company_evidence(
         "stage_status": manifest.get("status", "normal"),
         "stage_reason": manifest.get("reason", ""),
         "source_documents": manifest.get("documents", []),
+        "evidence_spans": list(evidence_spans_by_id.values()),
         "normalized_facts": facts,
         "dividend_events": merge_dividend_events(events),
     }

@@ -15,6 +15,8 @@ from typing import Any
 
 from cninfo_client import CnInfoClient, load_stock_maps
 from forecast_selected_dividends import forecast_selected_dividends
+from forward_dividend_models import load_target_yield_policy
+from forward_replay import build_replay_manifest
 from parse_forward_dividend_evidence import parse_company_evidence
 from prepare_forward_dividend_evidence import prepare_forward_evidence
 from render_forward_dividend_outputs import render_forward_dividend_outputs
@@ -206,6 +208,10 @@ def run_forward_analysis(
             raise
     try:
         evidence = _load_evidence(evidence_root, rows)
+        policy_source = SKILL_ROOT / "assets" / "forward_dividend_policy.json"
+        policy_snapshot = market_dir / "forward-dividend-policy.json"
+        _atomic_json(policy_snapshot, json.loads(policy_source.read_text(encoding="utf-8")))
+        target_yield_policy = load_target_yield_policy(policy_snapshot)
         forecast_rows = forecast_selected_dividends(
             top_rows=rows,
             evidence_by_code=evidence,
@@ -213,6 +219,7 @@ def run_forward_analysis(
             risk_free_rate=risk_free_rate,
             risk_free_rate_date=risk_free_rate_date,
             risk_free_rate_source=risk_free_rate_source,
+            target_yield_policy=target_yield_policy,
         )
         outputs = render_forward_dividend_outputs(
             rows=forecast_rows,
@@ -220,6 +227,21 @@ def run_forward_analysis(
             output_dir=output_dir,
             evidence_by_code=evidence,
         )
+        replay_manifest_path = market_dir / "forward-dividend-replay-manifest.json"
+        replay_manifest = build_replay_manifest(
+            output_dir=output_dir,
+            top10_path=top10_path,
+            evidence_by_code=evidence,
+            policy_path=policy_snapshot,
+            forward_csv=outputs["csv"],
+            run_date=run_date,
+            risk_free_rate=risk_free_rate,
+            risk_free_rate_date=risk_free_rate_date,
+            risk_free_rate_source=risk_free_rate_source,
+            skill_root=SKILL_ROOT,
+        )
+        _atomic_json(replay_manifest_path, replay_manifest)
+        outputs["replay_manifest"] = replay_manifest_path
         after_sha = _sha256(top10_path)
         after_mtime = top10_path.stat().st_mtime_ns
         if (after_sha, after_mtime) != (before_sha, before_mtime):

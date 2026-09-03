@@ -880,7 +880,9 @@ evidence_completeness
 forecast_uncertainty
 forecast_status
 forecast_reason
+forecast_profit_low
 forecast_profit
+forecast_profit_high
 forecast_payout_ratio_low
 forecast_payout_ratio
 forecast_payout_ratio_high
@@ -889,6 +891,7 @@ announced_dividend_floor
 special_dividend_excluded
 forecast_input_fact_ids
 forecast_input_event_ids
+forecast_selection_decisions
 evidence_detail_path
 ```
 

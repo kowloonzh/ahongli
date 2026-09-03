@@ -77,7 +77,7 @@ def _historical_payout_profile(
     evidence: dict[str, Any],
     *,
     profit_fact_type: str,
-) -> tuple[list[str], list[float], list[str], list[str]]:
+) -> tuple[list[str], list[float], list[str], list[str], list[dict[str, Any]]]:
     documents = {
         str(document.get("announcement_id") or ""): document
         for document in evidence.get("source_documents", [])
@@ -92,6 +92,7 @@ def _historical_payout_profile(
 
     selected_values: dict[str, float] = {}
     selected_fact_ids: dict[str, list[str]] = {}
+    decisions: list[dict[str, Any]] = []
     for period, facts in candidates_by_period.items():
         def priority(fact: dict[str, Any]) -> int:
             document = documents.get(str(fact.get("source_document_id") or ""), {})
@@ -114,6 +115,17 @@ def _historical_payout_profile(
             for fact in preferred
             if float(fact["value"]) == consensus and fact.get("fact_id")
         ]
+        decisions.append(
+            {
+                "selector": "historical_payout_ratio",
+                "period": period,
+                "candidate_fact_ids": [str(fact.get("fact_id") or "") for fact in facts],
+                "candidate_values": [float(fact["value"]) for fact in facts],
+                "selected_fact_ids": selected_fact_ids[period],
+                "selected_value": consensus,
+                "rule": "highest_source_priority_then_mode_then_higher_tie",
+            }
+        )
 
     derived = _derived_payout_ratios(evidence, profit_fact_type=profit_fact_type)
     for period, value in derived.items():
@@ -131,7 +143,7 @@ def _historical_payout_profile(
         for event in evidence.get("dividend_events", [])
         if str(event.get("fiscal_period") or "") in selected_periods and event.get("event_id")
     ]
-    return selected_periods, values, fact_ids, event_ids
+    return selected_periods, values, fact_ids, event_ids, decisions
 
 
 def _model_facts(
@@ -161,6 +173,7 @@ def _model_facts(
     ]
     policy = _latest(policies)
     result: dict[str, Any] = {"forecast_fiscal_year": forecast_year}
+    selection_decisions: list[dict[str, Any]] = []
     input_fact_ids: list[str] = []
     input_event_ids: list[str] = []
     announced = [
@@ -243,10 +256,11 @@ def _model_facts(
     is_bank = _truthy((company or {}).get("is_bank")) or "银行" in str((company or {}).get("industry") or "")
     is_insurance = "保险" in str((company or {}).get("industry") or "")
     if is_bank or is_insurance:
-        selected_periods, latest_values, payout_fact_ids, payout_event_ids = _historical_payout_profile(
+        selected_periods, latest_values, payout_fact_ids, payout_event_ids, payout_decisions = _historical_payout_profile(
             evidence,
             profit_fact_type="operating_profit_parent" if is_insurance else "net_profit_parent",
         )
+        selection_decisions.extend(payout_decisions)
         if len(latest_values) == 3:
             historical_median = statistics.median(latest_values)
             if "official_payout_ratio" not in result:
@@ -270,6 +284,7 @@ def _model_facts(
     ) else "missing"
     result["forecast_input_fact_ids"] = list(dict.fromkeys(input_fact_ids))
     result["forecast_input_event_ids"] = list(dict.fromkeys(input_event_ids))
+    result["forecast_selection_decisions"] = selection_decisions
     return result
 
 
@@ -281,6 +296,7 @@ def forecast_selected_dividends(
     risk_free_rate: float = 0.017,
     risk_free_rate_date: str = "20260831",
     risk_free_rate_source: str = "ChinaBond 10Y China Government Bond yield",
+    target_yield_policy: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     selected = [row for row in top_rows if str(row.get("selected", "是")) == "是"]
     if len(selected) > 10:
@@ -308,7 +324,9 @@ def forecast_selected_dividends(
         else:
             model_facts = _model_facts(evidence, run_date, row)
             forecast = forecast_company(company=row, facts=model_facts)
-        target = target_yield_from_analysis(company=row, risk_free_rate=risk_free_rate)
+        target = target_yield_from_analysis(
+            company=row, risk_free_rate=risk_free_rate, policy=target_yield_policy
+        )
         valuation: dict[str, Any]
         base_dps = forecast.get("forecast_fy_regular_dps_base")
         quote_price = row.get("current_price")

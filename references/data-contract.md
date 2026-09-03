@@ -58,4 +58,8 @@ Every non-empty forecast must reference original source documents, page evidence
 
 Persist `forecast_payout_ratio_low`, `forecast_payout_ratio`, and `forecast_payout_ratio_high` separately when payout assumptions vary by scenario. Complete-year payout facts exclude interim periods and historical footnotes assigned to another year. A `full_year` dividend event supersedes arithmetic addition of its component interim and final events for annual payout reconstruction.
 
+Also persist `forecast_profit_low`, `forecast_profit`, `forecast_profit_high`, `forecast_selection_decisions`, `target_yield_policy_id`, and `target_yield_policy_sha256`. Every normalized fact has an `evidence_span_id` resolving to a span with source document, page, raw excerpt, and extraction backend.
+
+The replay manifest is the portable integrity root for a run. It hashes the formal Top10, every per-company `forecast-evidence.json`, the copied policy snapshot, and the forward CSV, and records the exact Git commit and runtime parameters. Offline replay must validate all hashes and reproduce every CSV field.
+
 All forward instruments are A shares. Require `.SH` / `.SZ`, `share_class=A`, `quote_currency=CNY`, and `dividend_currency=CNY`. Mixed A/H disclosures must select explicit A-share pre-tax CNY DPS; H-share or HKD-only events are ineligible. When consolidated profit and payout apply to all ordinary shares, record `forecast_share_denominator_scope=all_ordinary_shares` instead of describing the denominator as A-share capital.

@@ -1,0 +1,37 @@
+{
+  "policy_id": "ahongli-target-yield-policy",
+  "version": "3",
+  "rounding_step": 0.005,
+  "categories": {
+    "stable_hydropower": {
+      "risk_spread_low": 0.063,
+      "risk_spread_high": 0.073,
+      "growth_floor": 0.02,
+      "growth_cap": 0.04
+    },
+    "bank": {
+      "risk_spread_low": 0.068,
+      "risk_spread_high": 0.083,
+      "growth_floor": 0.02,
+      "growth_cap": 0.03
+    },
+    "insurance": {
+      "risk_spread_low": 0.063,
+      "risk_spread_high": 0.083,
+      "growth_floor": 0.02,
+      "growth_cap": 0.03
+    },
+    "telecom": {
+      "risk_spread_low": 0.063,
+      "risk_spread_high": 0.083,
+      "growth_floor": 0.02,
+      "growth_cap": 0.03
+    },
+    "other": {
+      "risk_spread_low": 0.073,
+      "risk_spread_high": 0.093,
+      "growth_floor": 0.01,
+      "growth_cap": 0.03
+    }
+  }
+}

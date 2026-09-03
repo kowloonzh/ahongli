@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import hashlib
+import json
+from pathlib import Path
 from typing import Any
 
 
@@ -64,39 +67,46 @@ def _ratio(value: Any) -> float | None:
     return number / 100 if abs(number) > 1 else number
 
 
-def _round_half_percent(value: float) -> float:
-    return round(value / 0.005) * 0.005
+def load_target_yield_policy(path: Path | None = None) -> dict[str, Any]:
+    policy_path = Path(path) if path else Path(__file__).resolve().parents[1] / "assets" / "forward_dividend_policy.json"
+    raw = policy_path.read_bytes()
+    policy = json.loads(raw.decode("utf-8"))
+    policy["sha256"] = hashlib.sha256(raw).hexdigest()
+    policy["source_path"] = str(policy_path)
+    return policy
+
+
+def _round_to_step(value: float, step: float) -> float:
+    return round(value / step) * step
 
 
 def target_yield_from_analysis(
     *,
     company: dict[str, Any],
     risk_free_rate: float,
+    policy: dict[str, Any] | None = None,
 ) -> dict[str, float | str]:
     """Derive a decision yield band from required return less sustainable growth."""
     if not 0 <= risk_free_rate < 0.20:
         raise ValueError("risk_free_rate must be a decimal between zero and 0.20")
+    policy = policy or load_target_yield_policy()
     industry = str(company.get("industry") or "")
     if "水力发电" in industry:
         category = "stable_hydropower"
-        spread_low, spread_high = 0.063, 0.073
-        growth_floor, growth_cap = 0.02, 0.04
     elif "银行" in industry or _truthy(company.get("is_bank")):
         category = "bank"
-        spread_low, spread_high = 0.068, 0.083
-        growth_floor, growth_cap = 0.02, 0.03
     elif "保险" in industry:
         category = "insurance"
-        spread_low, spread_high = 0.063, 0.083
-        growth_floor, growth_cap = 0.02, 0.03
     elif "电信运营" in industry:
         category = "telecom"
-        spread_low, spread_high = 0.063, 0.083
-        growth_floor, growth_cap = 0.02, 0.03
     else:
         category = "other"
-        spread_low, spread_high = 0.073, 0.093
-        growth_floor, growth_cap = 0.01, 0.03
+    category_policy = policy["categories"][category]
+    spread_low = float(category_policy["risk_spread_low"])
+    spread_high = float(category_policy["risk_spread_high"])
+    growth_floor = float(category_policy["growth_floor"])
+    growth_cap = float(category_policy["growth_cap"])
+    rounding_step = float(policy["rounding_step"])
 
     roe = _ratio(company.get("roe"))
     payout = _ratio(company.get("latest_payout_ratio"))
@@ -110,11 +120,13 @@ def target_yield_from_analysis(
     sustainable_growth = min(growth_cap, max(growth_floor, raw_growth))
     required_low = risk_free_rate + spread_low
     required_high = risk_free_rate + spread_high
-    target_low = _round_half_percent(max(0.0, required_low - sustainable_growth))
-    target_high = _round_half_percent(max(target_low + 0.005, required_high - sustainable_growth))
+    target_low = _round_to_step(max(0.0, required_low - sustainable_growth), rounding_step)
+    target_high = _round_to_step(max(target_low + rounding_step, required_high - sustainable_growth), rounding_step)
     return {
         "target_yield_model_id": "required_return_minus_growth_v1",
-        "target_yield_model_version": "2",
+        "target_yield_model_version": str(policy["version"]),
+        "target_yield_policy_id": str(policy["policy_id"]),
+        "target_yield_policy_sha256": str(policy.get("sha256") or ""),
         "target_yield_category": category,
         "risk_free_rate": risk_free_rate,
         "equity_and_company_risk_spread_low": spread_low,
@@ -175,6 +187,7 @@ def forecast_company(
             "forecast_reason": "已公告完整常规DPS",
             "forecast_input_fact_ids": facts.get("forecast_input_fact_ids", []),
             "forecast_input_event_ids": facts.get("forecast_input_event_ids", []),
+            "forecast_selection_decisions": facts.get("forecast_selection_decisions", []),
         }
     industry = str(company.get("industry") or "")
     insurance_required = ["operating_profit_scenarios", "official_payout_ratio", "forecast_total_shares"]
@@ -205,12 +218,15 @@ def forecast_company(
                 else "正式股东回报政策与营运利润情景"
             ),
             "forecast_profit": facts["operating_profit_scenarios"]["base"],
+            "forecast_profit_low": facts["operating_profit_scenarios"]["low"],
+            "forecast_profit_high": facts["operating_profit_scenarios"]["high"],
             "forecast_payout_ratio": float(facts["official_payout_ratio"]),
             "forecast_payout_ratio_low": float(facts["official_payout_ratio"]),
             "forecast_payout_ratio_high": float(facts["official_payout_ratio"]),
             "forecast_total_shares": float(facts["forecast_total_shares"]),
             "forecast_input_fact_ids": facts.get("forecast_input_fact_ids", []),
             "forecast_input_event_ids": facts.get("forecast_input_event_ids", []),
+            "forecast_selection_decisions": facts.get("forecast_selection_decisions", []),
         }
     required = ["forecast_profit_scenarios", "official_payout_ratio", "forecast_total_shares"]
     if all(facts.get(field) is not None for field in required):
@@ -281,12 +297,15 @@ def forecast_company(
                 else "正式派息政策与可复算利润情景"
             ),
             "forecast_profit": facts["forecast_profit_scenarios"]["base"],
+            "forecast_profit_low": facts["forecast_profit_scenarios"]["low"],
+            "forecast_profit_high": facts["forecast_profit_scenarios"]["high"],
             "forecast_payout_ratio": float(facts["official_payout_ratio"]),
             "forecast_payout_ratio_low": float(payout_scenarios["low"]) if payout_scenarios else float(facts["official_payout_ratio"]),
             "forecast_payout_ratio_high": float(payout_scenarios["high"]) if payout_scenarios else float(facts["official_payout_ratio"]),
             "forecast_total_shares": float(facts["forecast_total_shares"]),
             "forecast_input_fact_ids": facts.get("forecast_input_fact_ids", []),
             "forecast_input_event_ids": facts.get("forecast_input_event_ids", []),
+            "forecast_selection_decisions": facts.get("forecast_selection_decisions", []),
         }
     if any(facts.get(field) is not None for field in required):
         missing = [field for field in required if facts.get(field) is None]
