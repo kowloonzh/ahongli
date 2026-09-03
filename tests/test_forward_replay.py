@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import importlib.util
 import json
 import sys
@@ -30,6 +31,10 @@ class ForwardReplayTest(unittest.TestCase):
             out = Path(tmp)
             evidence_dir = out / "market_data/forward_dividend_evidence/600900.SH"
             evidence_dir.mkdir(parents=True)
+            reports_dir = evidence_dir / "reports"
+            reports_dir.mkdir()
+            report_path = reports_dir / "R1-annual.pdf"
+            report_path.write_bytes(b"original report")
             top = out / "hs300-dividend-top10-20260902.csv"
             with top.open("w", encoding="utf-8-sig", newline="") as handle:
                 writer = csv.DictWriter(handle, fieldnames=[
@@ -49,7 +54,10 @@ class ForwardReplayTest(unittest.TestCase):
                 {"fact_id": "PRIOR", "fact_type": "net_profit_parent_prior_comparable", "period": "20250630", "value": 15.0},
                 {"fact_id": "SHARES", "fact_type": "total_shares", "period": "20260630", "value": 24.47},
                 {"fact_id": "POLICY", "fact_type": "official_payout_floor", "period": "20261231", "value": 0.70, "valid_from": 2026, "valid_to": 2030},
-            ], "dividend_events": [], "source_documents": []}
+            ], "dividend_events": [], "source_documents": [{
+                "announcement_id": "R1", "source_file": "reports/R1-annual.pdf",
+                "sha256": hashlib.sha256(b"original report").hexdigest(),
+            }]}
             (evidence_dir / "forecast-evidence.json").write_text(json.dumps(evidence), encoding="utf-8")
 
             result = runner.run_forward_analysis(
@@ -65,6 +73,10 @@ class ForwardReplayTest(unittest.TestCase):
             self.assertEqual(len(payload["policy"]["sha256"]), 64)
             self.assertEqual(len(payload["inputs"]["top10_sha256"]), 64)
             self.assertEqual(len(payload["outputs"]["forward_csv_sha256"]), 64)
+            self.assertEqual(
+                payload["inputs"]["evidence"][0]["source_documents"][0]["sha256"],
+                hashlib.sha256(b"original report").hexdigest(),
+            )
 
 
 if __name__ == "__main__":

@@ -48,10 +48,28 @@ def build_replay_manifest(
     evidence_files = []
     for code in sorted(evidence_by_code):
         path = output_dir / "market_data" / "forward_dividend_evidence" / code / "forecast-evidence.json"
+        source_documents = []
+        for document in evidence_by_code[code].get("source_documents", []):
+            source_file = document.get("source_file")
+            if not source_file:
+                continue
+            source_path = path.parent / str(source_file)
+            if not source_path.exists():
+                raise FileNotFoundError(source_path)
+            actual_hash = _sha256(source_path)
+            declared_hash = str(document.get("sha256") or "")
+            if declared_hash and declared_hash != actual_hash:
+                raise ValueError(f"source document hash mismatch: {source_path}")
+            source_documents.append({
+                "announcement_id": str(document.get("announcement_id") or ""),
+                "path": str(source_path.relative_to(output_dir)),
+                "sha256": actual_hash,
+            })
         evidence_files.append({
             "ts_code": code,
             "path": str(path.relative_to(output_dir)),
             "sha256": _sha256(path),
+            "source_documents": source_documents,
         })
     return {
         "schema_version": "1",
@@ -105,6 +123,10 @@ def replay_forward_analysis(manifest_path: Path, *, verify_code: bool = True) ->
         if _sha256(path) != item["sha256"]:
             raise ValueError(f"hash mismatch: {path}")
         evidence[item["ts_code"]] = json.loads(path.read_text(encoding="utf-8"))
+        for document in item.get("source_documents", []):
+            source_path = output_dir / document["path"]
+            if _sha256(source_path) != document["sha256"]:
+                raise ValueError(f"hash mismatch: {source_path}")
     params = manifest["parameters"]
     replayed = forecast_selected_dividends(
         top_rows=top_rows,
