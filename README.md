@@ -136,12 +136,22 @@ python3 scripts/run_forward_dividend_analysis.py \
 
 命令结束时会参考投资者分红观察表打印精简的前瞻Top10主表，只展示正式排名、公司、综合得分、A股价格、预期分红、预期股息率、当前位置、目标股息率区间和目标价格区间。该阶段只读取正式Top10，不修改原有300只CSV、Top10排名、得分或硬门槛。它从原始财报、分红公告和股东回报政策生成逐公司证据包，并额外输出：
 
+以下为正式 `20260901` Top10的真实前瞻运行结果。股价、排名和预测均是特定日期快照，不代表当前行情：
+
 | 排名 | 公司 | 得分 | 股价 | 预期分红 | 预期股息率 | 当前位置 | 目标股息率区间 | 目标价格区间 |
 |---:|---|---:|---:|---:|---:|---|---:|---:|
-| 1 | 示例公司A | 80.00 | 25.00 | 0.90 | 3.60% | 未达目标区间 | 4.00%–5.00% | 18.00–22.50 |
-| 2 | 示例公司B | 75.00 | 10.00 | 0.60 | 6.00% | 进入目标区间 | 5.00%–7.00% | 8.57–12.00 |
+| 1 | 中国平安 | 82.62 | 57.23 | 2.9020 | 5.07% | 进入目标区间 | 5.00%–7.00% | 41.46–58.04 |
+| 2 | 长江电力 | 74.58 | 28.40 | 1.0357 | 3.65% | 未达目标区间 | 4.00%–5.00% | 20.71–25.89 |
+| 3 | 招商银行 | 72.83 | 40.86 | 2.1245 | 5.20% | 未达目标区间 | 5.50%–7.00% | 30.35–38.63 |
+| 4 | 渝农商行 | 70.45 | 6.93 | 0.3334 | 4.81% | 未达目标区间 | 5.50%–7.00% | 4.76–6.06 |
+| 5 | 江苏银行 | 65.30 | 12.29 | 0.5908 | 4.81% | 未达目标区间 | 5.50%–7.00% | 8.44–10.74 |
+| 6 | 上海银行 | 62.35 | 9.68 | 0.5148 | 5.32% | 未达目标区间 | 5.50%–7.00% | 7.35–9.36 |
+| 7 | 工商银行 | 57.42 | 8.15 | 0.3150 | 3.86% | 未达目标区间 | 6.50%–8.00% | 3.94–4.85 |
+| 8 | 中国移动 | 57.08 | 99.89 | 4.5585 | 4.56% | 未达目标区间 | 5.50%–7.50% | 60.78–82.88 |
+| 9 | 中国电信 | 54.79 | 6.47 | 0.2440 | 3.77% | 未达目标区间 | 6.00%–8.00% | 3.05–4.07 |
+| 10 | 建设银行 | 53.52 | 11.09 | 0.3976 | 3.58% | 未达目标区间 | 6.50%–8.00% | 4.97–6.12 |
 
-以上仅展示输出结构。要求总回报率、可持续分红增长率、DPS低/基准/高情景、预测依据和证据完整性保留在CSV及逐公司详情页。
+要求总回报率、可持续分红增长率、DPS低/基准/高情景、预测依据和证据完整性保留在CSV及逐公司详情页。
 
 银行目标股息率区间的下限额外增加0.5个百分点安全边际，上限不变；例如 `5%–7%` 显示为 `5.5%–7%`。该调整不适用于保险、电信、公用事业或其他非银行公司。
 
@@ -149,12 +159,28 @@ python3 scripts/run_forward_dividend_analysis.py \
 - `hs300-dividend-forward-report-YYYYMMDD.md`；
 - `hs300-dividend-forward-dashboard-YYYYMMDD.html`；
 - `market_data/forward-dividend-run-status.json`；
-- `market_data/forward-dividend-replay-manifest.json`与版本化策略快照；
+- `market_data/forward-dividend-replay-manifest.json`；
+- `market_data/forward-dividend-policy.json`：本次运行使用的版本化策略快照；
+- `market_data/forward-dividend-sources.csv`、`forward-dividend-facts.csv`、`forward-dividend-events.csv`和`forward-dividend-results.csv`；
 - `market_data/forward_dividend_evidence/{ts_code}/`下的manifest、页级事实、事件和详情页。
 
 预测状态区分 `announced`、`modelled`、`data_gap`、`unsupported` 和 `failed`。证据不足时数值保持为空。目标股息率按“要求总回报率减可持续分红增长率”计算；目标价格、模型输入、DPS三情景和证据状态保留在CSV与详情页。
 
 AHongli只使用A股口径：证券代码为 `.SH` / `.SZ`，股价和DPS均为人民币。H股或港元股息不会混入A股前瞻DPS；证据无法转换为明确A股人民币口径时保留 `data_gap`。
+
+### 可溯源与离线复现
+
+每个预期DPS都保存低/基准/高利润与派息率、模型ID/版本、输入事实ID和事实选择决策。规范化事实通过稳定的 `evidence_span_id` 定位到原始文档、页码、原文片段和解析器版本。
+
+成功运行会生成完整性根 `forward-dividend-replay-manifest.json`，其中记录：
+
+- 干净的Git提交和全部运行参数；
+- 正式Top10输入哈希；
+- 每家公司证据JSON及所有引用原始文档的SHA-256；
+- 本次策略参数快照及哈希；
+- 最终前瞻CSV的SHA-256。
+
+最近一次真实验证覆盖10个证据包和255份原始文档，10家公司均为 `modelled`，严格离线重放结果为 `replay_verified=true`。
 
 离线验证已有运行结果：
 
@@ -163,6 +189,8 @@ python3 scripts/forward_replay.py \
   --manifest a_dividend_outputs/YYYYMMDD/market_data/forward-dividend-replay-manifest.json
 ```
 
+跨机器复现时，需要同时复制完整的 `a_dividend_outputs/{run_date}/` 运行目录，并检出重放manifest中记录的Git提交。重放过程不访问网络；代码提交、输入、策略、证据、原始文档、输出哈希或任一CSV字段不一致都会失败。
+
 实际年度DPS公布后，可准备包含 `ts_code,fiscal_year,actual_regular_dps` 的CSV并运行：
 
 ```bash
@@ -170,6 +198,8 @@ python3 scripts/evaluate_forecast_accuracy.py \
   --forecasts a_dividend_outputs/YYYYMMDD/hs300-dividend-forward-top10-YYYYMMDD.csv \
   --actuals actual-regular-dps.csv
 ```
+
+可复现只证明相同输入和模型会得到相同输出，不等于预测准确。真实准确率需要等对应财年常规DPS公布后，通过上述回测命令累计验证。
 
 ## 测试与校验
 
