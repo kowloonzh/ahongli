@@ -5,6 +5,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -252,6 +253,50 @@ class ForwardDividendEvidenceTest(unittest.TestCase):
 
         self.assertEqual(result["announcements"], [])
         self.assertEqual(observed["attempts"], 3)
+
+    def test_cninfo_retry_retries_gateway_timeout(self):
+        module = load_script("cninfo_client")
+        observed = {"attempts": 0, "sleeps": []}
+
+        def operation():
+            observed["attempts"] += 1
+            if observed["attempts"] < 3:
+                request = module.httpx.Request("POST", "https://www.cninfo.com.cn/query")
+                response = module.httpx.Response(504, request=request)
+                raise module.httpx.HTTPStatusError(
+                    "gateway timeout",
+                    request=request,
+                    response=response,
+                )
+            return "ok"
+
+        with patch.object(module.time, "sleep", side_effect=observed["sleeps"].append):
+            result = module._with_transient_retry(operation)
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(observed["attempts"], 3)
+        self.assertEqual(len(observed["sleeps"]), 2)
+
+    def test_cninfo_retry_does_not_retry_not_found(self):
+        module = load_script("cninfo_client")
+        observed = {"attempts": 0, "sleeps": []}
+
+        def operation():
+            observed["attempts"] += 1
+            request = module.httpx.Request("GET", "https://static.cninfo.com.cn/missing.pdf")
+            response = module.httpx.Response(404, request=request)
+            raise module.httpx.HTTPStatusError(
+                "not found",
+                request=request,
+                response=response,
+            )
+
+        with patch.object(module.time, "sleep", side_effect=observed["sleeps"].append):
+            with self.assertRaises(module.httpx.HTTPStatusError):
+                module._with_transient_retry(operation)
+
+        self.assertEqual(observed["attempts"], 1)
+        self.assertEqual(observed["sleeps"], [])
 
     def test_cninfo_document_download_returns_original_bytes(self):
         module = load_script("cninfo_client")

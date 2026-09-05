@@ -2,8 +2,13 @@ import importlib.util
 import json
 import re
 import sys
+import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+import httpx
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +30,15 @@ def load_module():
 
 def load_prepare_module():
     spec = importlib.util.spec_from_file_location("prepare_bank_metrics", PREPARE_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_download_module():
+    spec = importlib.util.spec_from_file_location("download_bank_reports", DOWNLOAD_SCRIPT)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     sys.modules[spec.name] = module
@@ -72,6 +86,100 @@ class BankMetricsParserTest(unittest.TestCase):
         )
 
         self.assertEqual([row["period"] for row in selected], ["20231231", "20241231", "20251231"])
+
+    def test_bank_announcement_query_retries_read_timeout(self):
+        module = load_download_module()
+        observed = {"attempts": 0}
+
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"hasMore": False, "announcements": [{"announcementId": "A1"}]}
+
+        class Client:
+            def __init__(self, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def post(self, url, data):
+                observed["attempts"] += 1
+                if observed["attempts"] == 1:
+                    raise httpx.ReadTimeout(
+                        "temporary CNinfo timeout",
+                        request=httpx.Request("POST", url),
+                    )
+                return Response()
+
+        module.httpx = types.SimpleNamespace(Client=Client, Timeout=lambda *args, **kwargs: None)
+        downloader = module.CnInfoDownloader(
+            stocks={"szse": {"601988": {"orgId": "ORG-601988", "zwjc": "中国银行"}}}
+        )
+
+        result = downloader.query_announcements(
+            {
+                "stock": ["601988"],
+                "category": ["category_ndbg_szsh"],
+                "searchkey": "2022年年度报告",
+                "seDate": "2023-03-01~2023-06-30",
+            },
+            "szse",
+        )
+
+        self.assertEqual(result[0]["announcementId"], "A1")
+        self.assertEqual(observed["attempts"], 2)
+
+    def test_bank_pdf_download_retries_read_timeout(self):
+        module = load_download_module()
+        observed = {"attempts": 0}
+
+        class Response:
+            content = b"original annual report"
+
+            def raise_for_status(self):
+                return None
+
+        class Client:
+            def __init__(self, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def get(self, url):
+                observed["attempts"] += 1
+                if observed["attempts"] == 1:
+                    raise httpx.ReadTimeout(
+                        "temporary CNinfo timeout",
+                        request=httpx.Request("GET", url),
+                    )
+                return Response()
+
+        module.httpx = types.SimpleNamespace(Client=Client, Timeout=lambda *args, **kwargs: None)
+        downloader = module.CnInfoDownloader(stocks={})
+        announcement = {
+            "adjunctType": "PDF",
+            "adjunctUrl": "finalpage/annual.pdf",
+            "secCode": "601988",
+            "secName": "中国银行",
+            "announcementTitle": "2022年年度报告",
+            "announcementId": "A1",
+        }
+
+        with patch.object(module.time, "sleep"), tempfile.TemporaryDirectory() as tmp:
+            path = downloader.download_pdf(announcement, Path(tmp))
+
+            self.assertEqual(path.read_bytes(), b"original annual report")
+        self.assertEqual(observed["attempts"], 2)
 
     def test_parses_simplified_chinese_bank_metrics_and_current_period_value(self):
         module = load_module()

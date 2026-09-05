@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import time
 from pathlib import Path
@@ -16,17 +17,30 @@ except ImportError:  # pragma: no cover - surfaced by build_page_fetcher
     httpx = None
 
 
-def _with_transient_retry(operation, *, attempts: int = 3):
-    transient = (OSError,)
-    if httpx is not None and hasattr(httpx, "TransportError"):
-        transient = transient + (httpx.TransportError,)
+TRANSIENT_HTTP_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
+
+
+def _is_transient_error(exc: Exception) -> bool:
+    if isinstance(exc, OSError):
+        return True
+    if httpx is None:
+        return False
+    if hasattr(httpx, "TransportError") and isinstance(exc, httpx.TransportError):
+        return True
+    if hasattr(httpx, "HTTPStatusError") and isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in TRANSIENT_HTTP_STATUS_CODES
+    return False
+
+
+def _with_transient_retry(operation, *, attempts: int = 4, base_delay: float = 0.2):
     for attempt in range(attempts):
         try:
             return operation()
-        except transient:
-            if attempt == attempts - 1:
+        except Exception as exc:
+            if not _is_transient_error(exc) or attempt == attempts - 1:
                 raise
-            time.sleep(0.2 * (attempt + 1))
+            delay = base_delay * (2**attempt) * random.uniform(0.8, 1.2)
+            time.sleep(delay)
     raise RuntimeError("unreachable")
 
 

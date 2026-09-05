@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import importlib.util
 import json
 import os
 import random
@@ -18,6 +19,18 @@ try:
     import httpx
 except ImportError:  # pragma: no cover - exercised by CLI users
     httpx = None
+
+
+def _load_transient_retry():
+    path = Path(__file__).with_name("cninfo_client.py")
+    spec = importlib.util.spec_from_file_location("bank_cninfo_client", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module._with_transient_retry
+
+
+_with_transient_retry = _load_transient_retry()
 
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
@@ -127,10 +140,10 @@ class CnInfoDownloader:
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
             "X-Requested-With": "XMLHttpRequest",
-            "Origin": "http://www.cninfo.com.cn",
-            "Referer": "http://www.cninfo.com.cn/new/commonUrl/pageOfSearch?url=disclosure/list/search&lastPage=index",
+            "Origin": "https://www.cninfo.com.cn",
+            "Referer": "https://www.cninfo.com.cn/new/commonUrl/pageOfSearch?url=disclosure/list/search&lastPage=index",
         }
-        self.query_url = "http://www.cninfo.com.cn/new/hisAnnouncement/query"
+        self.query_url = "https://www.cninfo.com.cn/new/hisAnnouncement/query"
 
     def find_stock(self, stock_input: str) -> tuple[str | None, dict[str, Any] | None, str | None]:
         for market, market_stocks in self.market_to_stocks.items():
@@ -155,15 +168,27 @@ class CnInfoDownloader:
         payload = self._build_payload(stock_code, stock_info, market, filter_params)
         announcements: list[dict[str, Any]] = []
 
-        with httpx.Client(headers=self.headers, cookies=self.cookies, timeout=httpx.Timeout(60.0)) as client:
-            has_more = True
-            while has_more:
-                payload["pageNum"] += 1
-                response = client.post(self.query_url, data=payload)
-                response.raise_for_status()
-                data = response.json()
-                has_more = data.get("hasMore", False)
-                announcements.extend(data.get("announcements") or [])
+        has_more = True
+        while has_more:
+            payload["pageNum"] += 1
+
+            def request_page():
+                timeout = httpx.Timeout(connect=10.0, read=15.0, write=10.0, pool=10.0)
+                with httpx.Client(headers=self.headers, cookies=self.cookies, timeout=timeout) as client:
+                    response = client.post(self.query_url, data=payload)
+                    response.raise_for_status()
+                    return response.json()
+
+            try:
+                data = _with_transient_retry(request_page)
+            except Exception as exc:
+                exc.add_note(
+                    "CNinfo announcement query failed: "
+                    f"stock={stock_code}, page={payload['pageNum']}, seDate={payload.get('seDate', '')}"
+                )
+                raise
+            has_more = data.get("hasMore", False)
+            announcements.extend(data.get("announcements") or [])
 
         return announcements
 
@@ -517,10 +542,24 @@ class CnInfoDownloader:
         if path.exists():
             return path
 
-        with httpx.Client(headers=self.headers, cookies=self.cookies, timeout=httpx.Timeout(60.0)) as client:
-            response = client.get(f"http://static.cninfo.com.cn/{announcement['adjunctUrl']}")
-            response.raise_for_status()
-            path.write_bytes(response.content)
+        url = f"https://static.cninfo.com.cn/{announcement['adjunctUrl']}"
+
+        def request_pdf() -> bytes:
+            timeout = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
+            with httpx.Client(headers=self.headers, cookies=self.cookies, timeout=timeout) as client:
+                response = client.get(url)
+                response.raise_for_status()
+                return response.content
+
+        try:
+            content = _with_transient_retry(request_pdf)
+        except Exception as exc:
+            exc.add_note(
+                "CNinfo PDF download failed: "
+                f"stock={announcement.get('secCode', '')}, announcement_id={announcement.get('announcementId', '')}"
+            )
+            raise
+        path.write_bytes(content)
         time.sleep(random.uniform(0.5, 1.5))
         return path
 
