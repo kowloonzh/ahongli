@@ -45,6 +45,8 @@ class RunForwardDividendAnalysisTest(unittest.TestCase):
                 "evidence_completeness": "complete",
                 "forecast_uncertainty": "medium",
                 "forecast_status": "modelled",
+                "next_dividend_date_status": "scheduled",
+                "next_dividend_payment_date": "20260910",
             },
             {
                 "rank": 2, "name": "缺口公司", "ts_code": "600002.SH",
@@ -55,15 +57,17 @@ class RunForwardDividendAnalysisTest(unittest.TestCase):
                 "target_yield_high": 0.08,
                 "target_display_label": "暂不判断",
                 "forecast_status": "data_gap",
+                "next_dividend_date_status": "pending_implementation",
+                "next_dividend_payment_date": None,
             },
         ]
 
         result = module.format_console_top10(rows, run_date="20260902")
 
         self.assertIn("AHongli A股前瞻Top10 20260902", result)
-        self.assertIn("排名 | 公司 | 得分 | 股价 | 预期分红 | 预期股息率 | 当前位置 | 目标股息率区间 | 目标价格区间", result)
-        self.assertIn("1 | 示例公司 | 80.00 | 25.00 | 0.9000 | 3.60% | 进入目标区间 | 4.00%–5.00% | 18.00–22.50", result)
-        self.assertIn("2 | 缺口公司 | 75.00 | 18.00 | — | — | 暂不判断 | 6.00%–8.00% | —", result)
+        self.assertIn("排名 | 公司 | 得分 | 股价 | 预期分红 | 预期股息率 | 下次派息日 | 当前位置 | 目标股息率区间 | 目标价格区间", result)
+        self.assertIn("1 | 示例公司 | 80.00 | 25.00 | 0.9000 | 3.60% | 2026-09-10 | 进入目标区间 | 4.00%–5.00% | 18.00–22.50", result)
+        self.assertIn("2 | 缺口公司 | 75.00 | 18.00 | — | — | 待实施公告 | 暂不判断 | 6.00%–8.00% | —", result)
         self.assertNotIn("DPS低/基准/高", result)
         self.assertNotIn("P25", result)
 

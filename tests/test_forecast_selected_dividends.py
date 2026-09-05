@@ -21,6 +21,146 @@ def load_module():
 
 
 class ForecastSelectedDividendsTest(unittest.TestCase):
+    def test_next_dividend_schedule_selects_earliest_future_a_share_regular_payment(self):
+        module = load_module()
+        selector = getattr(module, "next_dividend_schedule", None)
+        self.assertTrue(callable(selector), "缺少下一次派息日选择函数")
+        events = [
+            {
+                "event_id": "PAST",
+                "regular_or_special": "regular",
+                "share_class": "A",
+                "currency": "CNY",
+                "status": "implementation",
+                "record_date": "20260830",
+                "ex_dividend_date": "20260831",
+                "payment_date": "20260831",
+            },
+            {
+                "event_id": "SPECIAL",
+                "regular_or_special": "special",
+                "share_class": "A",
+                "currency": "CNY",
+                "status": "implementation",
+                "record_date": "20260908",
+                "ex_dividend_date": "20260909",
+                "payment_date": "20260909",
+            },
+            {
+                "event_id": "H-SHARE",
+                "regular_or_special": "regular",
+                "share_class": "H",
+                "currency": "HKD",
+                "status": "implementation",
+                "record_date": "20260907",
+                "ex_dividend_date": "20260908",
+                "payment_date": "20260908",
+            },
+            {
+                "event_id": "LATER",
+                "regular_or_special": "regular",
+                "share_class": "A",
+                "currency": "CNY",
+                "status": "implementation",
+                "record_date": "20261209",
+                "ex_dividend_date": "20261210",
+                "payment_date": "20261211",
+                "evidence_source_ids": ["A-LATER"],
+            },
+            {
+                "event_id": "NEXT",
+                "regular_or_special": "regular",
+                "share_class": "A",
+                "currency": "CNY",
+                "status": "implementation",
+                "record_date": "20260909",
+                "ex_dividend_date": "20260910",
+                "payment_date": "20260910",
+                "evidence_source_ids": ["A-NEXT"],
+            },
+        ]
+
+        result = selector(events, as_of_date="20260905")
+
+        self.assertEqual(result["next_dividend_date_status"], "scheduled")
+        self.assertEqual(result["next_dividend_event_id"], "NEXT")
+        self.assertEqual(result["next_dividend_record_date"], "20260909")
+        self.assertEqual(result["next_dividend_ex_date"], "20260910")
+        self.assertEqual(result["next_dividend_payment_date"], "20260910")
+        self.assertEqual(result["next_dividend_evidence_source_ids"], ["A-NEXT"])
+
+    def test_next_dividend_schedule_marks_current_plan_without_dates_as_pending(self):
+        module = load_module()
+        selector = getattr(module, "next_dividend_schedule", None)
+        self.assertTrue(callable(selector), "缺少下一次派息日选择函数")
+        events = [
+            {
+                "event_id": "OLD-PLAN",
+                "fiscal_period": "20231231",
+                "regular_or_special": "regular",
+                "share_class": "A",
+                "currency": "CNY",
+                "status": "dividend_plan",
+            },
+            {
+                "event_id": "CURRENT-PLAN",
+                "fiscal_period": "20261231",
+                "regular_or_special": "regular",
+                "share_class": "A",
+                "currency": "CNY",
+                "status": "dividend_plan",
+                "evidence_source_ids": ["A-PLAN"],
+            },
+        ]
+
+        result = selector(events, as_of_date="20260905")
+
+        self.assertEqual(result["next_dividend_date_status"], "pending_implementation")
+        self.assertEqual(result["next_dividend_event_id"], "CURRENT-PLAN")
+        self.assertIsNone(result["next_dividend_payment_date"])
+        self.assertEqual(result["next_dividend_evidence_source_ids"], ["A-PLAN"])
+
+    def test_next_dividend_schedule_does_not_treat_fully_implemented_year_as_pending(self):
+        module = load_module()
+        events = [
+            {
+                "event_id": "FULL-YEAR-PLAN",
+                "fiscal_period": "20251231",
+                "distribution_phase": "full_year",
+                "regular_or_special": "regular",
+                "share_class": "A",
+                "currency": "CNY",
+                "status": "dividend_plan",
+            },
+            {
+                "event_id": "INTERIM-PAID",
+                "fiscal_period": "20251231",
+                "distribution_phase": "interim",
+                "regular_or_special": "regular",
+                "share_class": "A",
+                "currency": "CNY",
+                "status": "implementation",
+                "ex_dividend_date": "20260114",
+                "payment_date": "20260114",
+            },
+            {
+                "event_id": "FINAL-PAID",
+                "fiscal_period": "20251231",
+                "distribution_phase": "final",
+                "regular_or_special": "regular",
+                "share_class": "A",
+                "currency": "CNY",
+                "status": "implementation",
+                "ex_dividend_date": "20260710",
+                "payment_date": "20260710",
+            },
+        ]
+
+        result = module.next_dividend_schedule(events, as_of_date="20260905")
+
+        self.assertEqual(result["next_dividend_date_status"], "not_announced")
+        self.assertIsNone(result["next_dividend_event_id"])
+
     def test_policy_forecast_builds_ttm_scenarios_without_changing_formal_rank(self):
         module = load_module()
         top = [{

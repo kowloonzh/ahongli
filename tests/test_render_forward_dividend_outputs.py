@@ -60,6 +60,12 @@ class RenderForwardDividendOutputsTest(unittest.TestCase):
                 "forecast_total_shares": 100.0,
                 "forecast_input_fact_ids": ["F1"],
                 "forecast_input_event_ids": ["E1"],
+                "next_dividend_date_status": "scheduled",
+                "next_dividend_event_id": "E-NEXT",
+                "next_dividend_record_date": "20260909",
+                "next_dividend_ex_date": "20260910",
+                "next_dividend_payment_date": "20260910",
+                "next_dividend_evidence_source_ids": ["A-NEXT"],
             },
             {
                 "rank": 2,
@@ -71,6 +77,7 @@ class RenderForwardDividendOutputsTest(unittest.TestCase):
                 "forecast_reason": "缺少正式派息政策",
                 "evidence_completeness": "missing",
                 "forecast_uncertainty": "not_estimable",
+                "next_dividend_date_status": "pending_implementation",
             },
         ]
         with tempfile.TemporaryDirectory() as tmp:
@@ -95,7 +102,9 @@ class RenderForwardDividendOutputsTest(unittest.TestCase):
             self.assertEqual([row["rank"] for row in csv_rows], ["1", "2"])
             self.assertEqual(csv_rows[1]["forecast_fy_regular_dps_base"], "")
             self.assertEqual(csv_rows[0]["forecast_input_fact_ids"], '["F1"]')
-            self.assertIn("| 排名 | 公司 | 得分 | 股价 | 预期分红 | 预期股息率 | 当前位置 | 目标股息率区间 | 目标价格区间 |", markdown)
+            self.assertIn("| 排名 | 公司 | 得分 | 股价 | 预期分红 | 预期股息率 | 下次派息日 | 当前位置 | 目标股息率区间 | 目标价格区间 |", markdown)
+            self.assertIn("2026-09-10", markdown + html)
+            self.assertIn("待实施公告", markdown + html)
             self.assertIn("未达目标区间", markdown)
             self.assertIn("目标股息率区间", html)
             self.assertIn("目标价格区间", html)
@@ -105,6 +114,8 @@ class RenderForwardDividendOutputsTest(unittest.TestCase):
             self.assertNotIn("历史常规股息率带", markdown + html)
             self.assertNotIn("historical_regular_yield_p25", csv_rows[0])
             self.assertEqual(csv_rows[0]["target_yield_low"], "0.04")
+            self.assertEqual(csv_rows[0]["next_dividend_payment_date"], "20260910")
+            self.assertEqual(csv_rows[0]["next_dividend_evidence_source_ids"], '["A-NEXT"]')
             self.assertNotIn("持有收息", markdown + html)
             self.assertTrue(paths["sources"].exists())
             self.assertTrue(paths["facts"].exists())
@@ -119,6 +130,9 @@ class RenderForwardDividendOutputsTest(unittest.TestCase):
             self.assertIn("年度报告", detail_text)
             self.assertIn("net_profit_parent", detail_text)
             self.assertIn("F1", detail_text)
+            self.assertIn("下次现金红利发放日：2026-09-10", detail_text)
+            self.assertIn("股权登记日：2026-09-09", detail_text)
+            self.assertIn("除权除息日：2026-09-10", detail_text)
             gap_detail = Path(tmp) / csv_rows[1]["evidence_detail_path"]
             self.assertIn("缺少正式派息政策", gap_detail.read_text(encoding="utf-8"))
 

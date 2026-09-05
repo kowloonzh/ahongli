@@ -54,6 +54,7 @@ class ADividendStrategyTest(unittest.TestCase):
 
             result = pipeline(
                 "20260905",
+                emit_forward_table=False,
                 strategy_runner=run_formal,
                 forward_module_loader=lambda: ForwardModule,
             )
@@ -62,6 +63,35 @@ class ADividendStrategyTest(unittest.TestCase):
         self.assertEqual(result["output_dir"], output)
         self.assertEqual(result["forward"]["status"]["status"], "success")
         self.assertEqual(result["forward_console"], "forward table 20260905")
+
+    def test_default_pipeline_prints_forward_top10_after_analysis(self):
+        module = load_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "20260905"
+            output.mkdir()
+            (output / "hs300-dividend-top10-20260905.csv").write_text(
+                "rank,ts_code,name,selected\n",
+                encoding="utf-8",
+            )
+
+            class ForwardModule:
+                @staticmethod
+                def run_forward_analysis(**kwargs):
+                    return {"status": {"status": "success"}, "rows": []}
+
+                @staticmethod
+                def format_console_top10(rows, *, run_date):
+                    return "排名 | 公司 | 股价 | 预期DPS | 预期股息率 | 当前位置"
+
+            with patch("builtins.print") as print_output:
+                module.run_pipeline(
+                    "20260905",
+                    strategy_runner=lambda run_date, **kwargs: output,
+                    forward_module_loader=lambda: ForwardModule,
+                )
+
+        print_output.assert_called_once_with("排名 | 公司 | 股价 | 预期DPS | 预期股息率 | 当前位置")
 
     def test_default_pipeline_can_explicitly_skip_forward_analysis(self):
         module = load_module()
@@ -99,6 +129,7 @@ class ADividendStrategyTest(unittest.TestCase):
         run_pipeline.assert_called_once()
         self.assertEqual(run_pipeline.call_args.args[0], "20260905")
         self.assertFalse(run_pipeline.call_args.kwargs["skip_forward_dividend"])
+        self.assertEqual(run_pipeline.call_args.kwargs.get("emit_forward_table"), False)
 
     def test_cli_parser_has_explicit_forward_opt_out(self):
         module = load_module()

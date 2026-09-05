@@ -2086,6 +2086,7 @@ def run_pipeline(
     sleep_seconds: float = 0.2,
     max_workers: int = 4,
     skip_forward_dividend: bool = False,
+    emit_forward_table: bool = True,
     *,
     strategy_runner=None,
     forward_module_loader=None,
@@ -2118,6 +2119,8 @@ def run_pipeline(
         forward["rows"],
         run_date=normalized_run_date,
     )
+    if emit_forward_table:
+        print(result["forward_console"])
     return result
 
 
@@ -2149,6 +2152,7 @@ def main(argv: list[str] | None = None) -> int:
         limit=args.limit,
         sleep_seconds=args.sleep_seconds,
         max_workers=args.max_workers,
+        emit_forward_table=False,
     )
     print(result["output_dir"])
     if result["forward"] is not None:

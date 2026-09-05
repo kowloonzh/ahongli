@@ -20,6 +20,94 @@ def _truthy(value: Any) -> bool:
     return str(value).strip().lower() in {"true", "1", "是", "yes"}
 
 
+def _compact_date(value: Any) -> str:
+    digits = "".join(character for character in str(value or "") if character.isdigit())
+    return digits[:8] if len(digits) >= 8 else ""
+
+
+def next_dividend_schedule(
+    events: list[dict[str, Any]],
+    *,
+    as_of_date: str,
+) -> dict[str, Any]:
+    cutoff = _compact_date(as_of_date)
+    relevant = [
+        event
+        for event in events
+        if event.get("regular_or_special") == "regular"
+        and event.get("share_class") in {None, "", "A"}
+        and event.get("currency") in {None, "", "CNY"}
+    ]
+    scheduled = [
+        event
+        for event in relevant
+        if _compact_date(event.get("ex_dividend_date")) > cutoff
+        and _compact_date(event.get("payment_date"))
+    ]
+    if scheduled:
+        selected = min(
+            scheduled,
+            key=lambda event: (
+                _compact_date(event.get("ex_dividend_date")),
+                _compact_date(event.get("payment_date")),
+            ),
+        )
+        return {
+            "next_dividend_date_status": "scheduled",
+            "next_dividend_event_id": selected.get("event_id"),
+            "next_dividend_record_date": _compact_date(selected.get("record_date")) or None,
+            "next_dividend_ex_date": _compact_date(selected.get("ex_dividend_date")) or None,
+            "next_dividend_payment_date": _compact_date(selected.get("payment_date")) or None,
+            "next_dividend_evidence_source_ids": list(selected.get("evidence_source_ids") or []),
+        }
+
+    cutoff_year = int(cutoff[:4]) if len(cutoff) == 8 else 0
+    implemented_phases = {
+        (str(event.get("fiscal_period") or ""), str(event.get("distribution_phase") or ""))
+        for event in relevant
+        if event.get("status") == "implementation"
+    }
+    implemented_by_period: dict[str, set[str]] = {}
+    for period, phase in implemented_phases:
+        implemented_by_period.setdefault(period, set()).add(phase)
+    completed_periods = {
+        period
+        for period, phases in implemented_by_period.items()
+        if "full_year" in phases or {"interim", "final"}.issubset(phases)
+    }
+    pending = [
+        event
+        for event in relevant
+        if event.get("status") not in {None, "", "implementation"}
+        and not _compact_date(event.get("payment_date"))
+        and int(str(event.get("fiscal_period") or "0")[:4] or 0) >= cutoff_year - 1
+        and str(event.get("fiscal_period") or "") not in completed_periods
+        and (
+            str(event.get("fiscal_period") or ""),
+            str(event.get("distribution_phase") or ""),
+        ) not in implemented_phases
+    ]
+    if pending:
+        selected = max(pending, key=lambda event: str(event.get("fiscal_period") or ""))
+        return {
+            "next_dividend_date_status": "pending_implementation",
+            "next_dividend_event_id": selected.get("event_id"),
+            "next_dividend_record_date": None,
+            "next_dividend_ex_date": None,
+            "next_dividend_payment_date": None,
+            "next_dividend_evidence_source_ids": list(selected.get("evidence_source_ids") or []),
+        }
+
+    return {
+        "next_dividend_date_status": "not_announced",
+        "next_dividend_event_id": None,
+        "next_dividend_record_date": None,
+        "next_dividend_ex_date": None,
+        "next_dividend_payment_date": None,
+        "next_dividend_evidence_source_ids": [],
+    }
+
+
 def _facts(evidence: dict[str, Any], fact_type: str) -> list[dict[str, Any]]:
     return [
         fact
@@ -357,6 +445,10 @@ def forecast_selected_dividends(
             if row.get("price_date") not in {None, ""}
             else None
         )
+        next_schedule = next_dividend_schedule(
+            evidence.get("dividend_events", []),
+            as_of_date=run_date,
+        )
         results.append(
             {
                 **row,
@@ -376,6 +468,7 @@ def forecast_selected_dividends(
                 "risk_free_rate_source": risk_free_rate_source,
                 **forecast,
                 "forward_12m_eligible_dps": forward_12m,
+                **next_schedule,
                 **target,
                 **valuation,
             }

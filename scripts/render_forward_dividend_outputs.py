@@ -20,6 +20,9 @@ FORWARD_FIELDS = [
     "source_dividend_yield_definition", "forecast_fiscal_year",
     "forecast_fy_regular_dps_low", "forecast_fy_regular_dps_base",
     "forecast_fy_regular_dps_high", "forward_12m_eligible_dps",
+    "next_dividend_date_status", "next_dividend_event_id",
+    "next_dividend_record_date", "next_dividend_ex_date", "next_dividend_payment_date",
+    "next_dividend_evidence_source_ids",
     "expected_dividend_yield", "target_yield_low", "target_yield_high",
     "target_price_low", "target_price_high", "target_status", "target_display_label",
     "target_yield_model_id", "target_yield_model_version", "target_yield_category",
@@ -80,6 +83,21 @@ def _display_range(low: Any, high: Any, *, percent: bool = False) -> str:
     return f"{formatter(low)}–{formatter(high)}"
 
 
+def _display_date(value: Any) -> str:
+    digits = "".join(character for character in str(value or "") if character.isdigit())
+    if len(digits) >= 8:
+        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+    return "—"
+
+
+def format_next_dividend_payment(row: dict[str, Any]) -> str:
+    if row.get("next_dividend_payment_date") not in {None, ""}:
+        return _display_date(row.get("next_dividend_payment_date"))
+    if row.get("next_dividend_date_status") == "pending_implementation":
+        return "待实施公告"
+    return "—"
+
+
 def _write_detail(
     row: dict[str, Any],
     detail_path: Path,
@@ -105,6 +123,14 @@ def _write_detail(
         f"- 高：{_number(row.get('forecast_fy_regular_dps_high'), 4)}",
         f"- 派息率低/基准/高：{_percent(row.get('forecast_payout_ratio_low'))} / "
         f"{_percent(row.get('forecast_payout_ratio'))} / {_percent(row.get('forecast_payout_ratio_high'))}",
+        "",
+        "## 下一次派息",
+        "",
+        f"- 日期状态：`{row.get('next_dividend_date_status', 'not_announced')}`",
+        f"- 股权登记日：{_display_date(row.get('next_dividend_record_date'))}",
+        f"- 除权除息日：{_display_date(row.get('next_dividend_ex_date'))}",
+        f"- 下次现金红利发放日：{format_next_dividend_payment(row)}",
+        f"- 分红事件ID：{row.get('next_dividend_event_id') or '—'}",
     ]
     if all(row.get(field) not in {None, ""} for field in ["forecast_profit", "forecast_payout_ratio", "forecast_total_shares"]):
         lines.extend(
@@ -158,11 +184,13 @@ def _write_detail(
     events = (evidence or {}).get("dividend_events", [])
     lines.extend(["", "## 分红经济事件", ""])
     if events:
-        lines.extend(["| 事件ID | 财年 | 阶段 | 常规/特别 | 税前DPS | 状态 |", "|---|---|---|---|---:|---|"])
+        lines.extend(["| 事件ID | 财年 | 阶段 | 常规/特别 | 税前DPS | 状态 | 登记日 | 除息日 | 发放日 |", "|---|---|---|---|---:|---|---|---|---|"])
         for event in events:
             lines.append(
                 f"| {event.get('event_id','')} | {event.get('fiscal_period','')} | {event.get('distribution_phase','')} | "
-                f"{event.get('regular_or_special','')} | {event.get('cash_dividend_per_share_pre_tax','')} | {event.get('status','')} |"
+                f"{event.get('regular_or_special','')} | {event.get('cash_dividend_per_share_pre_tax','')} | {event.get('status','')} | "
+                f"{_display_date(event.get('record_date'))} | {_display_date(event.get('ex_dividend_date'))} | "
+                f"{_display_date(event.get('payment_date'))} |"
             )
     else:
         lines.append("未取得分红经济事件。")
@@ -215,8 +243,8 @@ def render_forward_dividend_outputs(
         "",
         "前瞻分红严格后置，不改变正式排名和综合得分。目标股息率由要求总回报率减可持续分红增长率得到，不是投资建议。",
         "",
-        "| 排名 | 公司 | 得分 | 股价 | 预期分红 | 预期股息率 | 当前位置 | 目标股息率区间 | 目标价格区间 |",
-        "|---:|---|---:|---:|---:|---:|---|---:|---:|",
+        "| 排名 | 公司 | 得分 | 股价 | 预期分红 | 预期股息率 | 下次派息日 | 当前位置 | 目标股息率区间 | 目标价格区间 |",
+        "|---:|---|---:|---:|---:|---:|---|---|---:|---:|",
     ]
     for row in ordered:
         target_yield = _display_range(
@@ -227,7 +255,8 @@ def render_forward_dividend_outputs(
             f"| {row.get('rank','')} | [{row.get('name','')}]({row.get('evidence_detail_path','')}) | "
             f"{_number(row.get('dividend_score_total'))} | {_number(row.get('quote_price'))} | "
             f"{_number(row.get('forecast_fy_regular_dps_base'), 4)} | {_percent(row.get('expected_dividend_yield'))} | "
-            f"{row.get('target_display_label') or '暂不判断'} | {target_yield} | {target_price} |"
+            f"{format_next_dividend_payment(row)} | {row.get('target_display_label') or '暂不判断'} | "
+            f"{target_yield} | {target_price} |"
         )
     _atomic_write(markdown_path, "\n".join(md) + "\n")
 
@@ -242,6 +271,7 @@ def render_forward_dividend_outputs(
             f"<td>{_number(row.get('quote_price'))}</td>"
             f"<td>{_number(row.get('forecast_fy_regular_dps_base'),4)}</td>"
             f"<td>{_percent(row.get('expected_dividend_yield'))}</td>"
+            f"<td>{html.escape(format_next_dividend_payment(row))}</td>"
             f"<td>{html.escape(str(row.get('target_display_label') or '暂不判断'))}</td>"
             f"<td>{_display_range(row.get('target_yield_low'), row.get('target_yield_high'), percent=True)}</td>"
             f"<td>{_display_range(row.get('target_price_low'), row.get('target_price_high'))}</td>"
@@ -252,7 +282,7 @@ def render_forward_dividend_outputs(
 body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#f5f7fa;color:#172033}}header,main{{padding:24px 32px}}header{{background:#12344d;color:#fff}}table{{width:100%;border-collapse:collapse;background:#fff}}th,td{{padding:9px;border-bottom:1px solid #e5e7eb;font-size:12px;text-align:left}}th{{background:#eef3f7}}a{{color:#0b63a5}}small{{color:#64748b}}
 </style></head><body><header><h1>AHongli 前瞻分红观察表</h1><p>{html.escape(run_date)}｜正式排名与得分不变</p></header><main>
 <p>目标股息率区间用于统一观察投入门槛；证据和计算过程保存在公司详情页。</p>
-<table><thead><tr><th>排名</th><th>公司</th><th>得分</th><th>股价</th><th>预期分红</th><th>预期股息率</th><th>当前位置</th><th>目标股息率区间</th><th>目标价格区间</th></tr></thead><tbody>{''.join(body)}</tbody></table>
+<table><thead><tr><th>排名</th><th>公司</th><th>得分</th><th>股价</th><th>预期分红</th><th>预期股息率</th><th>下次派息日</th><th>当前位置</th><th>目标股息率区间</th><th>目标价格区间</th></tr></thead><tbody>{''.join(body)}</tbody></table>
 </main></body></html>"""
     _atomic_write(html_path, document)
 

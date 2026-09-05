@@ -19,7 +19,7 @@ from forward_dividend_models import load_target_yield_policy
 from forward_replay import build_replay_manifest
 from parse_forward_dividend_evidence import parse_company_evidence
 from prepare_forward_dividend_evidence import prepare_forward_evidence
-from render_forward_dividend_outputs import render_forward_dividend_outputs
+from render_forward_dividend_outputs import format_next_dividend_payment, render_forward_dividend_outputs
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
@@ -44,8 +44,8 @@ def _console_percent(value: Any, *, stored_as_ratio: bool = True) -> str:
 def format_console_top10(rows: list[dict[str, Any]], *, run_date: str) -> str:
     lines = [
         f"AHongli A股前瞻Top10 {run_date}",
-        "排名 | 公司 | 得分 | 股价 | 预期分红 | 预期股息率 | 当前位置 | 目标股息率区间 | 目标价格区间",
-        "--- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---:",
+        "排名 | 公司 | 得分 | 股价 | 预期分红 | 预期股息率 | 下次派息日 | 当前位置 | 目标股息率区间 | 目标价格区间",
+        "--- | --- | ---: | ---: | ---: | ---: | --- | --- | ---: | ---:",
     ]
     for row in sorted(rows, key=lambda item: int(item.get("rank") or 10_000)):
         target_yield = (
@@ -62,7 +62,7 @@ def format_console_top10(rows: list[dict[str, Any]], *, run_date: str) -> str:
         lines.append(
             f"{row.get('rank','')} | {row.get('name','')} | {_console_number(row.get('dividend_score_total'))} | "
             f"{_console_number(row.get('quote_price'))} | {_console_number(row.get('forecast_fy_regular_dps_base'), 4)} | "
-            f"{_console_percent(row.get('expected_dividend_yield'))} | "
+            f"{_console_percent(row.get('expected_dividend_yield'))} | {format_next_dividend_payment(row)} | "
             f"{row.get('target_display_label') or '暂不判断'} | {target_yield} | {target_price}"
         )
     return "\n".join(lines)
