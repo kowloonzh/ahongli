@@ -1,13 +1,13 @@
 ---
 name: ahongli
-description: Use when screening the latest CSI 300 constituents for quality-dividend candidates with auditable hard gates and separate bank/financial/nonfinancial scoring, or when adding evidence-backed forward DPS and target-yield analysis to the resulting formal Top10.
+description: Use when screening the latest CSI 300 constituents for quality-dividend candidates with auditable hard gates and separate bank/financial/nonfinancial scoring, followed by evidence-backed forward DPS and target-yield analysis for the formal Top10 by default.
 ---
 
 # AHongli Dividend Strategy
 
 ## Purpose
 
-Screen the latest 沪深300 constituents for durable quality-dividend candidates. This is not a current-yield chase or investment instruction. A company must pass all hard gates before its factor score can qualify it for the formal Top10.
+Screen the latest 沪深300 constituents for durable quality-dividend candidates, then analyze the formal Top10's forward DPS and target yield by default. This is not a current-yield chase or investment instruction. A company must pass all hard gates before its factor score can qualify it for the formal Top10.
 
 Read [references/strategy-spec.md](references/strategy-spec.md) before changing factor calculations, thresholds, weights, or selection behavior. Read [references/data-contract.md](references/data-contract.md) before changing Tushare fields, company-profile caching, or output columns.
 
@@ -44,6 +44,14 @@ Current price, current dividend yield, and the pass ratio may be displayed but n
 For market-preflight passers, fetch or reuse Tushare `dividend`, `income`, `fina_indicator`, `cashflow`, `balancesheet`, and `fina_audit` evidence. Obtain enough structured ROE inputs for all 300 companies to calculate the CSI 300 lowest-volatility 80% benchmark.
 
 Apply every structured hard gate, including direct-property exclusion from the cached company profile. Score complete passers directly; do not query disclosure periods, generate reports, or parse subjective company-quality labels.
+
+### 4. Persist formal outputs
+
+Write the complete 300-stock candidates, formal Top10, Markdown, HTML, and audit caches before starting forward analysis. These files are transaction A and must remain valid even if the later forward stage fails.
+
+### 5. Analyze forward dividends by default
+
+After transaction A succeeds, the main runner starts the independent forward-dividend transaction for the persisted formal Top10. It prepares original evidence, forecasts supported companies, calculates expected and target dividend yields, and writes the separate forward outputs. A forward failure may fail the combined command and update its own status file, but must never roll back or modify the formal candidates, Top10, ranks, scores, gates, or factor contributions.
 
 ## Hard Gates
 
@@ -128,12 +136,22 @@ python3 scripts/prepare_bank_metrics.py \
 
 ## Run
 
+The main command runs both the formal screen and forward-dividend analysis by default:
+
 ```bash
 python3 scripts/run_a_dividend_strategy.py \
   --run-date YYYYMMDD
 ```
 
 Use `--skip-fetch` only when the market, profile, and structured-factor caches cover the applicable stage. Use `--refresh-constituents` when the user asks for a fresh CSI 300 universe.
+
+Use `--skip-forward-dividend` only when the user explicitly wants transaction A without forward DPS and yield outputs:
+
+```bash
+python3 scripts/run_a_dividend_strategy.py \
+  --run-date YYYYMMDD \
+  --skip-forward-dividend
+```
 
 ## Threshold Simulation
 
@@ -154,17 +172,20 @@ Write under `a_dividend_outputs/{YYYYMMDD}/`:
 - `hs300-dividend-top10-{YYYYMMDD}.csv` containing only all-gate passers;
 - `hs300-dividend-report-{YYYYMMDD}.md`;
 - `hs300-dividend-dashboard-{YYYYMMDD}.html`;
+- `hs300-dividend-forward-top10-{YYYYMMDD}.csv`;
+- `hs300-dividend-forward-report-{YYYYMMDD}.md`;
+- `hs300-dividend-forward-dashboard-{YYYYMMDD}.html`;
 - auditable market, company-profile, dividend, structured-financial, and factor caches.
 
 Every rejected row needs a specific non-empty reason. Distinguish `data_gap`, `hard_gate_failed`, and `selected`. Show raw gate values, profile source, main business, factor percentiles, weighted contributions, data periods, sources, and quality. Report stage counts: 300 total, market passers, structured passers, and final selections.
 
 Legacy price, current-yield, persistence-ratio, text-safety, dividend-financing, execution-composite, company-quality, and real-estate-relevance scores must not affect the total.
 
-## Optional Forward-Dividend Analysis
+## Forward-Dividend Analysis
 
 Read [docs/forward-dividend-evidence-proposal.md](docs/forward-dividend-evidence-proposal.md) before changing the forward evidence, model, valuation, status, or output contracts.
 
-The forward stage is a separate transaction that consumes an already-written formal Top10. It must never change the formal candidates CSV, Top10 CSV, ranks, scores, gates, or factor contributions. Run it after the formal strategy:
+The forward stage remains a separate transaction that consumes an already-written formal Top10. The main runner invokes it by default after persisting formal outputs. It must never change the formal candidates CSV, Top10 CSV, ranks, scores, gates, or factor contributions. Use the standalone command to rerun or repair only transaction B:
 
 ```bash
 python3 scripts/run_forward_dividend_analysis.py \
@@ -173,6 +194,8 @@ python3 scripts/run_forward_dividend_analysis.py \
 ```
 
 After the run status, the command prints a compact A-share Top10 main table to stdout with only the formal rank, company, score, A-share quote, base forecast DPS, expected yield, target position, target-yield range, and target-price range. The persisted CSV and per-company detail remain the auditable sources of truth for model inputs, DPS scenarios, evidence completeness, and uncertainty.
+
+When reporting a completed run to the user, reproduce the runner's standard nine-column main table without dropping or reordering columns: rank, company, score, A-share quote, base forecast DPS, expected dividend yield, target position, target-yield range, and target-price range. Do not replace it with a narrower hand-built or Rich table. If a value is unavailable, display `—` and retain the column and applicable status; never hide missing data by omitting the column. Additional commentary may follow the standard table.
 
 Use `--skip-prepare` only when every applicable Top10 evidence directory already contains a validated `forecast-evidence.json`. Forward results use independent `announced`, `modelled`, `data_gap`, `unsupported`, and `failed` states. Missing or unsupported forecasts keep numeric columns empty and retain the original formal rank and score.
 

@@ -2060,26 +2060,101 @@ def run_strategy(
     return out
 
 
-def main() -> int:
+def _load_forward_dividend_module():
+    script = Path(__file__).with_name("run_forward_dividend_analysis.py")
+    if not script.exists():
+        raise RuntimeError(f"缺少前瞻分红分析脚本：{script}")
+    import importlib.util
+
+    script_dir = str(script.parent)
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
+    spec = importlib.util.spec_from_file_location("run_forward_dividend_analysis", script)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def run_pipeline(
+    run_date: str,
+    skip_fetch: bool = False,
+    refresh_constituents: bool = False,
+    fixed_constituents_file: Path | None = None,
+    limit: int | None = None,
+    sleep_seconds: float = 0.2,
+    max_workers: int = 4,
+    skip_forward_dividend: bool = False,
+    *,
+    strategy_runner=None,
+    forward_module_loader=None,
+) -> dict[str, Any]:
+    normalized_run_date = compact_date(run_date)
+    run_formal = strategy_runner or run_strategy
+    out = run_formal(
+        normalized_run_date,
+        skip_fetch=skip_fetch,
+        refresh_constituents=refresh_constituents,
+        fixed_constituents_file=fixed_constituents_file,
+        limit=limit,
+        sleep_seconds=sleep_seconds,
+        max_workers=max_workers,
+    )
+    result = {"output_dir": out, "forward": None, "forward_console": ""}
+    if skip_forward_dividend:
+        return result
+
+    load_forward = forward_module_loader or _load_forward_dividend_module
+    forward_module = load_forward()
+    top10_path = out / f"hs300-dividend-top10-{normalized_run_date}.csv"
+    forward = forward_module.run_forward_analysis(
+        run_date=normalized_run_date,
+        top10_path=top10_path,
+        output_dir=out,
+    )
+    result["forward"] = forward
+    result["forward_console"] = forward_module.format_console_top10(
+        forward["rows"],
+        run_date=normalized_run_date,
+    )
+    return result
+
+
+def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run CSI 300 quality-dividend strategy screen.")
     parser.add_argument("--run-date", default=datetime.now().strftime("%Y%m%d"))
     parser.add_argument("--skip-fetch", action="store_true")
+    parser.add_argument(
+        "--skip-forward-dividend",
+        action="store_true",
+        help="Only write the formal strategy outputs; skip the default Top10 forward-dividend stage",
+    )
     parser.add_argument("--refresh-constituents", action="store_true")
     parser.add_argument("--fixed-constituents-file", type=Path)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--sleep-seconds", type=float, default=0.2)
     parser.add_argument("--max-workers", type=int, default=4)
-    args = parser.parse_args()
-    out = run_strategy(
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_argument_parser().parse_args(argv)
+    result = run_pipeline(
         args.run_date,
         skip_fetch=args.skip_fetch,
+        skip_forward_dividend=args.skip_forward_dividend,
         refresh_constituents=args.refresh_constituents,
         fixed_constituents_file=args.fixed_constituents_file,
         limit=args.limit,
         sleep_seconds=args.sleep_seconds,
         max_workers=args.max_workers,
     )
-    print(out)
+    print(result["output_dir"])
+    if result["forward"] is not None:
+        print(json.dumps(result["forward"]["status"], ensure_ascii=False, indent=2))
+        print()
+        print(result["forward_console"])
     return 0
 
 

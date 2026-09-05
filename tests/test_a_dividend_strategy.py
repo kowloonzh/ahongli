@@ -26,6 +26,118 @@ def load_module():
 
 
 class ADividendStrategyTest(unittest.TestCase):
+    def test_default_pipeline_runs_forward_analysis_after_formal_outputs(self):
+        module = load_module()
+        pipeline = getattr(module, "run_pipeline", None)
+        self.assertTrue(callable(pipeline), "缺少默认两阶段编排函数")
+        events = []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "20260905"
+            output.mkdir()
+            top10 = output / "hs300-dividend-top10-20260905.csv"
+
+            def run_formal(run_date, **kwargs):
+                events.append(("formal", run_date))
+                top10.write_text("rank,ts_code,name,selected\n", encoding="utf-8")
+                return output
+
+            class ForwardModule:
+                @staticmethod
+                def run_forward_analysis(**kwargs):
+                    events.append(("forward", kwargs["run_date"], kwargs["top10_path"]))
+                    return {"status": {"status": "success"}, "rows": []}
+
+                @staticmethod
+                def format_console_top10(rows, *, run_date):
+                    return f"forward table {run_date}"
+
+            result = pipeline(
+                "20260905",
+                strategy_runner=run_formal,
+                forward_module_loader=lambda: ForwardModule,
+            )
+
+        self.assertEqual(events, [("formal", "20260905"), ("forward", "20260905", top10)])
+        self.assertEqual(result["output_dir"], output)
+        self.assertEqual(result["forward"]["status"]["status"], "success")
+        self.assertEqual(result["forward_console"], "forward table 20260905")
+
+    def test_default_pipeline_can_explicitly_skip_forward_analysis(self):
+        module = load_module()
+        pipeline = getattr(module, "run_pipeline", None)
+        self.assertTrue(callable(pipeline), "缺少默认两阶段编排函数")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "20260905"
+
+            result = pipeline(
+                "20260905",
+                skip_forward_dividend=True,
+                strategy_runner=lambda run_date, **kwargs: output,
+                forward_module_loader=lambda: self.fail("跳过前瞻时不应加载前瞻模块"),
+            )
+
+        self.assertEqual(result["output_dir"], output)
+        self.assertIsNone(result["forward"])
+        self.assertEqual(result["forward_console"], "")
+
+    def test_cli_defaults_to_two_stage_pipeline(self):
+        module = load_module()
+        output = Path("/tmp/ahongli-test-output")
+        pipeline_result = {"output_dir": output, "forward": None, "forward_console": ""}
+
+        with (
+            patch.object(module, "run_pipeline", return_value=pipeline_result) as run_pipeline,
+            patch.object(module, "run_strategy", return_value=output),
+            patch.object(sys, "argv", ["run_a_dividend_strategy.py", "--run-date", "20260905"]),
+            patch("builtins.print"),
+        ):
+            exit_code = module.main()
+
+        self.assertEqual(exit_code, 0)
+        run_pipeline.assert_called_once()
+        self.assertEqual(run_pipeline.call_args.args[0], "20260905")
+        self.assertFalse(run_pipeline.call_args.kwargs["skip_forward_dividend"])
+
+    def test_cli_parser_has_explicit_forward_opt_out(self):
+        module = load_module()
+        build_parser = getattr(module, "build_argument_parser", None)
+        self.assertTrue(callable(build_parser), "缺少CLI参数构建函数")
+
+        args = build_parser().parse_args(["--run-date", "20260905", "--skip-forward-dividend"])
+
+        self.assertTrue(args.skip_forward_dividend)
+
+    def test_cli_prints_forward_status_and_expected_yield_table(self):
+        module = load_module()
+        pipeline_result = {
+            "output_dir": Path("/tmp/ahongli-test-output"),
+            "forward": {"status": {"status": "success"}, "rows": []},
+            "forward_console": "排名 | 公司 | 预期分红 | 预期股息率",
+        }
+
+        with (
+            patch.object(module, "run_pipeline", return_value=pipeline_result),
+            patch("builtins.print") as print_output,
+        ):
+            exit_code = module.main(["--run-date", "20260905"])
+
+        self.assertEqual(exit_code, 0)
+        rendered = "\n".join(str(call.args[0]) if call.args else "" for call in print_output.call_args_list)
+        self.assertIn('"status": "success"', rendered)
+        self.assertIn("预期股息率", rendered)
+
+    def test_forward_module_loader_loads_independent_runner(self):
+        module = load_module()
+        loader = getattr(module, "_load_forward_dividend_module", None)
+        self.assertTrue(callable(loader), "缺少前瞻runner加载函数")
+
+        forward_module = loader()
+
+        self.assertTrue(callable(forward_module.run_forward_analysis))
+        self.assertTrue(callable(forward_module.format_console_top10))
+
     def test_default_universe_is_hs300(self):
         module = load_module()
 

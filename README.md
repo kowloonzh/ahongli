@@ -62,7 +62,7 @@ export CNINFO_INSERT_COOKIE=your_cookie_value
 
 ## 正式运行
 
-在仓库根目录执行：
+在仓库根目录执行。主命令默认先完成正式选股，再基于已经落盘的正式Top10继续执行前瞻DPS、预期股息率和目标股息率分析：
 
 ```bash
 python3 scripts/run_a_dividend_strategy.py \
@@ -71,6 +71,14 @@ python3 scripts/run_a_dividend_strategy.py \
 ```
 
 正式门槛要求过去五年有效交易日中，至少80%的交易日TTM股息率不低于3%。银行年报和专项指标缓存缺失时，主脚本会自动下载、提取、解析并验证最近三个审计年度。
+
+只有明确需要单独生成正式选股产物、不执行前瞻阶段时才使用：
+
+```bash
+python3 scripts/run_a_dividend_strategy.py \
+  --run-date YYYYMMDD \
+  --skip-forward-dividend
+```
 
 只有确认当日市场、公司资料、结构化财务和银行缓存完整时才使用：
 
@@ -114,12 +122,15 @@ a_dividend_outputs/YYYYMMDD/
 - `hs300-dividend-report-YYYYMMDD.md`：中文报告；
 - `hs300-dividend-dashboard-YYYYMMDD.html`：HTML看板；
 - `market_data/bank_quality_metrics.csv`：银行三年专项指标与证据。
+- `hs300-dividend-forward-top10-YYYYMMDD.csv`：含预期DPS、预期股息率和目标区间的前瞻Top10；
+- `hs300-dividend-forward-report-YYYYMMDD.md`：前瞻分红报告；
+- `hs300-dividend-forward-dashboard-YYYYMMDD.html`：前瞻分红看板。
 
 模拟结果写入独立的 `YYYYMMDD_sim_yield_*` 目录。
 
-## Top10前瞻分红分析
+## 单独重跑Top10前瞻分红分析
 
-正式策略产物落盘后，可以独立运行前瞻DPS与目标股息率分析：
+主命令默认会执行该阶段。正式策略产物已经落盘后，也可以用以下命令单独重跑或修复前瞻DPS与目标股息率分析：
 
 ```bash
 python3 scripts/run_forward_dividend_analysis.py \
