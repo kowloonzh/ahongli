@@ -62,13 +62,26 @@ export CNINFO_INSERT_COOKIE=your_cookie_value
 
 ## 正式运行
 
-在仓库根目录执行。主命令默认先完成正式选股，再基于已经落盘的正式Top10继续执行前瞻DPS、预期股息率和目标股息率分析：
+在项目工作区执行。主命令默认先完成正式选股，再基于已经落盘的正式Top10继续执行前瞻DPS、预期股息率和目标股息率分析：
 
 ```bash
 python3 scripts/run_a_dividend_strategy.py \
   --run-date YYYYMMDD \
-  --refresh-constituents
+  --refresh-constituents \
+  --data-root ./data
 ```
+
+安装在项目 `.agents/skills/ahongli` 下时，也可以从项目根目录执行：
+
+```bash
+python3 .agents/skills/ahongli/scripts/run_a_dividend_strategy.py \
+  --run-date YYYYMMDD \
+  --data-root ./data
+```
+
+数据目录优先级为 `--data-root`、环境变量 `AHONGLI_DATA_ROOT`、自动识别的项目 `data/`。正式结果、前瞻证据和银行报告缓存不会再默认写入技能安装目录。无Git元数据的安装包使用运行代码树SHA-256写入replay manifest，不要在技能目录临时执行 `git init`。
+
+旧版已经写入技能目录的数据不会自动搬迁。重新同步技能前，如需复用旧缓存，请先将 `a_dividend_outputs/` 和 `_bank_report_cache/` 复制到项目 `data/` 下并核对；runner不会主动删除旧目录。
 
 正式门槛要求过去五年有效交易日中，至少80%的交易日TTM股息率不低于3%。银行年报和专项指标缓存缺失时，主脚本会自动下载、提取、解析并验证最近三个审计年度。
 
@@ -77,6 +90,7 @@ python3 scripts/run_a_dividend_strategy.py \
 ```bash
 python3 scripts/run_a_dividend_strategy.py \
   --run-date YYYYMMDD \
+  --data-root ./data \
   --skip-forward-dividend
 ```
 
@@ -85,6 +99,7 @@ python3 scripts/run_a_dividend_strategy.py \
 ```bash
 python3 scripts/run_a_dividend_strategy.py \
   --run-date YYYYMMDD \
+  --data-root ./data \
   --skip-fetch
 ```
 
@@ -95,14 +110,15 @@ python3 scripts/run_a_dividend_strategy.py \
 ```bash
 python3 scripts/simulate_dividend_threshold.py \
   --run-date YYYYMMDD \
-  --yield-threshold 2.5
+  --yield-threshold 2.5 \
+  --data-root ./data
 ```
 
 ## 单独准备银行指标
 
 ```bash
 python3 scripts/prepare_bank_metrics.py \
-  --output a_dividend_outputs/YYYYMMDD/market_data/bank_quality_metrics.csv \
+  --output data/a_dividend_outputs/YYYYMMDD/market_data/bank_quality_metrics.csv \
   --as-of-date YYYYMMDD \
   --bank-codes 600036.SH 601398.SH
 ```
@@ -112,7 +128,7 @@ python3 scripts/prepare_bank_metrics.py \
 正式结果写入：
 
 ```text
-a_dividend_outputs/YYYYMMDD/
+data/a_dividend_outputs/YYYYMMDD/
 ```
 
 主要文件：
@@ -121,7 +137,7 @@ a_dividend_outputs/YYYYMMDD/
 - `hs300-dividend-top10-YYYYMMDD.csv`：通过全部硬门槛的Top10；
 - `hs300-dividend-report-YYYYMMDD.md`：中文报告；
 - `hs300-dividend-dashboard-YYYYMMDD.html`：HTML看板；
-- `market_data/bank_quality_metrics.csv`：银行三年专项指标与证据。
+- `market_data/bank_quality_metrics.csv`：银行三年专项指标与证据；
 - `hs300-dividend-forward-top10-YYYYMMDD.csv`：含预期DPS、预期股息率和目标区间的前瞻Top10；
 - `hs300-dividend-forward-report-YYYYMMDD.md`：前瞻分红报告；
 - `hs300-dividend-forward-dashboard-YYYYMMDD.html`：前瞻分红看板。
@@ -135,7 +151,7 @@ a_dividend_outputs/YYYYMMDD/
 ```bash
 python3 scripts/run_forward_dividend_analysis.py \
   --run-date YYYYMMDD \
-  --top10 a_dividend_outputs/YYYYMMDD/hs300-dividend-top10-YYYYMMDD.csv
+  --top10 data/a_dividend_outputs/YYYYMMDD/hs300-dividend-top10-YYYYMMDD.csv
 ```
 
 前瞻分析完成后，主CLI和默认 `run_pipeline()` API都会直接打印前瞻Top10主表，展示正式排名、公司、综合得分、A股价格、预期分红、预期股息率、下次派息日、当前位置、目标股息率区间和目标价格区间。确切派息日只来自正式公告；只有方案时显示“待实施公告”，没有合格事件时显示“—”。登记日、除息日、事件ID和来源ID保留在CSV及公司详情。该阶段只读取正式Top10，不修改原有300只CSV、Top10排名、得分或硬门槛。它从原始财报、分红公告和股东回报政策生成逐公司证据包，并额外输出：
@@ -175,16 +191,16 @@ AHongli只使用A股口径：证券代码为 `.SH` / `.SZ`，股价和DPS均为�
 
 ```bash
 python3 scripts/forward_replay.py \
-  --manifest a_dividend_outputs/YYYYMMDD/market_data/forward-dividend-replay-manifest.json
+  --manifest data/a_dividend_outputs/YYYYMMDD/market_data/forward-dividend-replay-manifest.json
 ```
 
-跨机器复现时，需要同时复制完整的 `a_dividend_outputs/{run_date}/` 运行目录，并检出重放manifest中记录的Git提交。重放过程不访问网络；代码提交、输入、策略、证据、原始文档、输出哈希或任一CSV字段不一致都会失败。
+跨机器复现时，需要同时复制完整的 `data/a_dividend_outputs/{run_date}/` 运行目录。Git检出运行记录中的提交；无Git安装包则校验manifest中的运行代码树SHA-256。重放过程不访问网络；代码身份、输入、策略、证据、原始文档、输出哈希或任一CSV字段不一致都会失败。
 
 实际年度DPS公布后，可准备包含 `ts_code,fiscal_year,actual_regular_dps` 的CSV并运行：
 
 ```bash
 python3 scripts/evaluate_forecast_accuracy.py \
-  --forecasts a_dividend_outputs/YYYYMMDD/hs300-dividend-forward-top10-YYYYMMDD.csv \
+  --forecasts data/a_dividend_outputs/YYYYMMDD/hs300-dividend-forward-top10-YYYYMMDD.csv \
   --actuals actual-regular-dps.csv
 ```
 

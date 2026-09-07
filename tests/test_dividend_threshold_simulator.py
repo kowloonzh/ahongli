@@ -1,5 +1,7 @@
 import importlib.util
+import inspect
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -20,6 +22,19 @@ def load_module():
 
 
 class DividendThresholdSimulatorTest(unittest.TestCase):
+    def test_simulation_uses_explicit_persistent_data_root(self):
+        module = load_module()
+        self.assertIn("data_root", inspect.signature(module.simulation_output_dir).parameters)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_root = Path(tmp) / "data"
+            output = module.simulation_output_dir("20260831", 2.5, data_root=data_root)
+
+        self.assertEqual(
+            output,
+            data_root.resolve() / "a_dividend_outputs" / "20260831_sim_yield_2_5pct",
+        )
+
     def test_simulation_output_is_namespaced_and_ratio_uses_requested_threshold(self):
         self.assertTrue(SCRIPT.exists())
         module = load_module()

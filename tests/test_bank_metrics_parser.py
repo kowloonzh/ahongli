@@ -87,6 +87,16 @@ class BankMetricsParserTest(unittest.TestCase):
 
         self.assertEqual([row["period"] for row in selected], ["20231231", "20241231", "20251231"])
 
+    def test_bank_report_cache_is_sibling_of_output_root(self):
+        module = load_prepare_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            data_root = Path(tmp) / "data"
+            output = data_root / "a_dividend_outputs" / "20260905" / "market_data" / "bank_quality_metrics.csv"
+
+            result = module._default_cache_root(output)
+
+        self.assertEqual(result, data_root / "_bank_report_cache")
+
     def test_bank_announcement_query_retries_read_timeout(self):
         module = load_download_module()
         observed = {"attempts": 0}

@@ -34,8 +34,12 @@ def threshold_slug(threshold: float) -> str:
     return f"{threshold:g}".replace(".", "_") + "pct"
 
 
-def simulation_output_dir(run_date: str, threshold: float) -> Path:
-    return runner.output_dir(run_date).with_name(
+def simulation_output_dir(
+    run_date: str,
+    threshold: float,
+    data_root: Path | str | None = None,
+) -> Path:
+    return runner.output_dir(run_date, data_root=data_root).with_name(
         f"{runner.compact_date(run_date)}_sim_yield_{threshold_slug(threshold)}"
     )
 
@@ -171,12 +175,14 @@ def run_simulation(
     sleep_seconds: float = 0.2,
     all_structured_cache: Path | None = None,
     bank_metrics_cache: Path | None = None,
+    data_root: Path | str | None = None,
 ) -> Path:
     if threshold <= 0:
         raise ValueError("yield threshold must be positive")
     run_date = runner.compact_date(run_date)
-    formal_dir = runner.output_dir(run_date)
-    out = simulation_output_dir(run_date, threshold)
+    persistent_data_root = runner.resolve_data_root(data_root)
+    formal_dir = runner.output_dir(run_date, data_root=persistent_data_root)
+    out = simulation_output_dir(run_date, threshold, data_root=persistent_data_root)
     out.mkdir(parents=True, exist_ok=True)
     market_dir = runner.ensure_market_data(
         run_date,
@@ -185,6 +191,7 @@ def run_simulation(
         fixed_constituents_file=None,
         sleep_seconds=sleep_seconds,
         max_workers=max_workers,
+        data_root=persistent_data_root,
     )
     structured_cache = all_structured_cache or (
         formal_dir / "market_data" / "structured_factors_all.csv"
@@ -289,6 +296,7 @@ def main() -> int:
     parser.add_argument("--run-date", required=True)
     parser.add_argument("--yield-threshold", required=True, type=float)
     parser.add_argument("--skip-fetch", action="store_true")
+    parser.add_argument("--data-root", type=Path)
     parser.add_argument("--refresh-constituents", action="store_true")
     parser.add_argument("--max-workers", type=int, default=4)
     parser.add_argument("--sleep-seconds", type=float, default=0.2)
@@ -304,6 +312,7 @@ def main() -> int:
         sleep_seconds=args.sleep_seconds,
         all_structured_cache=args.all_structured_cache,
         bank_metrics_cache=args.bank_metrics_cache,
+        data_root=args.data_root,
     )
     print(output)
     return 0

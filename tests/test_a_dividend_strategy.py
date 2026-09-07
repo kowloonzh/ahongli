@@ -1,4 +1,5 @@
 import importlib.util
+import inspect
 import json
 import sys
 import tempfile
@@ -26,6 +27,91 @@ def load_module():
 
 
 class ADividendStrategyTest(unittest.TestCase):
+    def test_data_root_defaults_outside_project_local_skill_installation(self):
+        module = load_module()
+        resolver = getattr(module, "resolve_data_root", None)
+        self.assertTrue(callable(resolver), "缺少持久数据根目录解析函数")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace" / "hongli"
+            skill_dir = workspace / ".agents" / "skills" / "ahongli"
+            skill_dir.mkdir(parents=True)
+
+            result = resolver(
+                environ={},
+                cwd=skill_dir,
+                invocation_skill_dir=skill_dir,
+            )
+
+        self.assertEqual(result, (workspace / "data").resolve())
+
+    def test_explicit_data_root_precedes_environment_and_workspace_defaults(self):
+        module = load_module()
+        resolver = getattr(module, "resolve_data_root", None)
+        self.assertTrue(callable(resolver), "缺少持久数据根目录解析函数")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            explicit = base / "explicit-data"
+            environment = base / "environment-data"
+            result = resolver(
+                explicit,
+                environ={"AHONGLI_DATA_ROOT": str(environment)},
+                cwd=base / "cwd",
+                invocation_skill_dir=base / "skill",
+            )
+
+        self.assertEqual(result, explicit.resolve())
+
+    def test_global_skill_installation_uses_invoking_project_data_directory(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            project = base / "workspace" / "hongli"
+            global_skill = home / ".agents" / "skills" / "ahongli"
+            global_skill.mkdir(parents=True)
+            project.mkdir(parents=True)
+
+            result = module.resolve_data_root(
+                environ={"HOME": str(home)},
+                cwd=project,
+                invocation_skill_dir=global_skill,
+            )
+
+        self.assertEqual(result, (project / "data").resolve())
+
+    def test_pipeline_passes_resolved_data_root_to_formal_stage(self):
+        module = load_module()
+        self.assertIn("data_root", inspect.signature(module.run_pipeline).parameters)
+        observed = {}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_root = Path(tmp) / "persistent-data"
+
+            def run_formal(run_date, **kwargs):
+                observed.update(kwargs)
+                return data_root / "a_dividend_outputs" / run_date
+
+            result = module.run_pipeline(
+                "20260905",
+                data_root=data_root,
+                skip_forward_dividend=True,
+                strategy_runner=run_formal,
+            )
+
+        self.assertEqual(observed["data_root"], data_root.resolve())
+        self.assertEqual(result["output_dir"], data_root / "a_dividend_outputs" / "20260905")
+
+    def test_cli_accepts_explicit_persistent_data_root(self):
+        module = load_module()
+        parser = module.build_argument_parser()
+        self.assertIn("data_root", {action.dest for action in parser._actions})
+
+        args = parser.parse_args(["--run-date", "20260905", "--data-root", "/tmp/hongli-data"])
+
+        self.assertEqual(args.data_root, Path("/tmp/hongli-data"))
+
     def test_default_pipeline_runs_forward_analysis_after_formal_outputs(self):
         module = load_module()
         pipeline = getattr(module, "run_pipeline", None)
@@ -433,9 +519,10 @@ class ADividendStrategyTest(unittest.TestCase):
     def test_ensure_market_data_uses_local_hs300_fetcher(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp, patch.object(
-            module, "REPO_ROOT", Path(tmp)
-        ), patch.object(module, "fetch_hs300_market_data") as fetcher:
-            expected = Path(tmp) / "a_dividend_outputs" / "20260806" / "market_data"
+            module, "fetch_hs300_market_data"
+        ) as fetcher:
+            data_root = Path(tmp) / "data"
+            expected = data_root / "a_dividend_outputs" / "20260806" / "market_data"
             fetcher.return_value = expected
 
             try:
@@ -444,6 +531,7 @@ class ADividendStrategyTest(unittest.TestCase):
                     skip_fetch=False,
                     refresh_constituents=True,
                     sleep_seconds=0,
+                    data_root=data_root,
                 )
             except NameError as exc:
                 self.fail(f"行情入口仍依赖旧A50模块：{exc}")
@@ -451,6 +539,7 @@ class ADividendStrategyTest(unittest.TestCase):
             self.assertEqual(result, expected)
             fetcher.assert_called_once()
             self.assertTrue(fetcher.call_args.kwargs["refresh_constituents"])
+            self.assertEqual(fetcher.call_args.kwargs["market_dir"], expected)
 
     def test_dividend_preflight_requires_enough_valid_days_and_coverage(self):
         module = load_module()

@@ -21,7 +21,7 @@ import pandas as pd
 
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
-REPO_ROOT = SKILL_DIR
+DATA_ROOT_ENV = "AHONGLI_DATA_ROOT"
 INDEX_CODE = "000300.SH"
 INDEX_NAME = "沪深300"
 EXPECTED_CONSTITUENT_COUNT = 300
@@ -211,8 +211,47 @@ def five_year_start(run_date: str) -> str:
     return (dt - timedelta(days=365 * 5 + 10)).strftime("%Y%m%d")
 
 
-def output_dir(run_date: str) -> Path:
-    return REPO_ROOT / OUTPUT_ROOT_NAME / compact_date(run_date)
+def resolve_data_root(
+    data_root: Path | str | None = None,
+    *,
+    environ: dict[str, str] | None = None,
+    cwd: Path | None = None,
+    invocation_skill_dir: Path | None = None,
+) -> Path:
+    environment = os.environ if environ is None else environ
+    working_directory = Path.cwd() if cwd is None else Path(cwd)
+
+    def absolute(path: Path | str) -> Path:
+        candidate = Path(path).expanduser()
+        if not candidate.is_absolute():
+            candidate = working_directory / candidate
+        return candidate.resolve()
+
+    if data_root is not None:
+        return absolute(data_root)
+    if configured := str(environment.get(DATA_ROOT_ENV, "")).strip():
+        return absolute(configured)
+
+    invoked_from = (
+        Path(invocation_skill_dir)
+        if invocation_skill_dir is not None
+        else Path(__file__).absolute().parents[1]
+    )
+    agents_dir = next(
+        (parent for parent in (invoked_from, *invoked_from.parents) if parent.name == ".agents"),
+        None,
+    )
+    configured_home = str(environment.get("HOME", "")).strip()
+    home_directory = Path(configured_home).expanduser().resolve() if configured_home else Path.home().resolve()
+    is_project_local_install = (
+        agents_dir is not None and agents_dir.parent.resolve() != home_directory
+    )
+    workspace_root = agents_dir.parent if is_project_local_install else working_directory
+    return (workspace_root / "data").resolve()
+
+
+def output_dir(run_date: str, data_root: Path | str | None = None) -> Path:
+    return resolve_data_root(data_root) / OUTPUT_ROOT_NAME / compact_date(run_date)
 
 
 def build_latest_constituents(
@@ -1752,8 +1791,9 @@ def ensure_market_data(
     fixed_constituents_file: Path | None = None,
     sleep_seconds: float = 0.2,
     max_workers: int = 4,
+    data_root: Path | str | None = None,
 ) -> Path:
-    out = output_dir(run_date)
+    out = output_dir(run_date, data_root=data_root)
     market = out / "market_data"
     if skip_fetch:
         constituents_path = market / "constituents.csv"
@@ -1982,9 +2022,11 @@ def run_strategy(
     limit: int | None = None,
     sleep_seconds: float = 0.2,
     max_workers: int = 4,
+    data_root: Path | str | None = None,
 ) -> Path:
     run_date = compact_date(run_date)
-    out = output_dir(run_date)
+    persistent_data_root = resolve_data_root(data_root)
+    out = output_dir(run_date, data_root=persistent_data_root)
     out.mkdir(parents=True, exist_ok=True)
     market_dir = ensure_market_data(
         run_date,
@@ -1993,6 +2035,7 @@ def run_strategy(
         fixed_constituents_file=fixed_constituents_file,
         sleep_seconds=sleep_seconds,
         max_workers=max_workers,
+        data_root=persistent_data_root,
     )
     structured_factors = ensure_structured_factor_data(
         run_date,
@@ -2087,11 +2130,13 @@ def run_pipeline(
     max_workers: int = 4,
     skip_forward_dividend: bool = False,
     emit_forward_table: bool = True,
+    data_root: Path | str | None = None,
     *,
     strategy_runner=None,
     forward_module_loader=None,
 ) -> dict[str, Any]:
     normalized_run_date = compact_date(run_date)
+    persistent_data_root = resolve_data_root(data_root)
     run_formal = strategy_runner or run_strategy
     out = run_formal(
         normalized_run_date,
@@ -2101,6 +2146,7 @@ def run_pipeline(
         limit=limit,
         sleep_seconds=sleep_seconds,
         max_workers=max_workers,
+        data_root=persistent_data_root,
     )
     result = {"output_dir": out, "forward": None, "forward_console": ""}
     if skip_forward_dividend:
@@ -2129,6 +2175,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-date", default=datetime.now().strftime("%Y%m%d"))
     parser.add_argument("--skip-fetch", action="store_true")
     parser.add_argument(
+        "--data-root",
+        type=Path,
+        help=f"Persistent data directory (default: ${DATA_ROOT_ENV} or the workspace data directory)",
+    )
+    parser.add_argument(
         "--skip-forward-dividend",
         action="store_true",
         help="Only write the formal strategy outputs; skip the default Top10 forward-dividend stage",
@@ -2153,6 +2204,7 @@ def main(argv: list[str] | None = None) -> int:
         sleep_seconds=args.sleep_seconds,
         max_workers=args.max_workers,
         emit_forward_table=False,
+        data_root=args.data_root,
     )
     print(result["output_dir"])
     if result["forward"] is not None:

@@ -30,6 +30,46 @@ def _git_state(repo: Path) -> tuple[str, bool]:
     return commit, dirty
 
 
+def _tree_revision(repo: Path) -> str:
+    files = sorted(
+        [*repo.glob("scripts/**/*.py"), *repo.glob("assets/*.json")],
+        key=lambda path: path.relative_to(repo).as_posix(),
+    )
+    if not files:
+        raise RuntimeError(f"no runtime files found for code identity: {repo}")
+    digest = hashlib.sha256()
+    for path in files:
+        relative = path.relative_to(repo).as_posix().encode("utf-8")
+        digest.update(relative)
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _code_identity(repo: Path, *, kind: str | None = None) -> dict[str, Any]:
+    repo = Path(repo).resolve()
+    if kind != "tree_sha256":
+        try:
+            git_root = Path(
+                subprocess.run(
+                    ["git", "rev-parse", "--show-toplevel"],
+                    cwd=repo,
+                    check=True,
+                    text=True,
+                    capture_output=True,
+                ).stdout.strip()
+            ).resolve()
+            if git_root != repo:
+                raise ValueError(f"skill root is nested inside a different Git repository: {git_root}")
+            commit, dirty = _git_state(repo)
+            return {"kind": "git", "revision": commit, "dirty": dirty}
+        except (FileNotFoundError, subprocess.CalledProcessError, ValueError):
+            if kind == "git":
+                raise
+    return {"kind": "tree_sha256", "revision": _tree_revision(repo), "dirty": False}
+
+
 def build_replay_manifest(
     *,
     output_dir: Path,
@@ -44,7 +84,7 @@ def build_replay_manifest(
     skill_root: Path,
 ) -> dict[str, Any]:
     output_dir = Path(output_dir).resolve()
-    commit, dirty = _git_state(skill_root)
+    code_identity = _code_identity(skill_root)
     evidence_files = []
     for code in sorted(evidence_by_code):
         path = output_dir / "market_data" / "forward_dividend_evidence" / code / "forecast-evidence.json"
@@ -72,10 +112,11 @@ def build_replay_manifest(
             "source_documents": source_documents,
         })
     return {
-        "schema_version": "1",
+        "schema_version": "2",
         "run_date": run_date,
-        "code_commit": commit,
-        "code_dirty": dirty,
+        "code_commit": code_identity["revision"] if code_identity["kind"] == "git" else "",
+        "code_dirty": code_identity["dirty"],
+        "code_identity": code_identity,
         "parameters": {
             "risk_free_rate": risk_free_rate,
             "risk_free_rate_date": risk_free_rate_date,
@@ -102,9 +143,21 @@ def replay_forward_analysis(manifest_path: Path, *, verify_code: bool = True) ->
     output_dir = manifest_path.parent.parent
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if verify_code:
-        commit, dirty = _git_state(Path(__file__).resolve().parents[1])
-        if commit != manifest["code_commit"] or dirty:
-            raise RuntimeError("current code does not match clean manifest commit")
+        declared_identity = manifest.get("code_identity")
+        if declared_identity:
+            current_identity = _code_identity(
+                Path(__file__).resolve().parents[1],
+                kind=str(declared_identity["kind"]),
+            )
+            if (
+                current_identity["revision"] != declared_identity["revision"]
+                or current_identity["dirty"]
+            ):
+                raise RuntimeError("current code does not match replay manifest code identity")
+        else:
+            commit, dirty = _git_state(Path(__file__).resolve().parents[1])
+            if commit != manifest["code_commit"] or dirty:
+                raise RuntimeError("current code does not match clean manifest commit")
     top10 = output_dir / manifest["inputs"]["top10_path"]
     policy_path = output_dir / manifest["policy"]["path"]
     forward_csv = output_dir / manifest["outputs"]["forward_csv_path"]
@@ -154,7 +207,12 @@ def replay_forward_analysis(manifest_path: Path, *, verify_code: bool = True) ->
             if fields:
                 differences.append({"row": index, "fields": fields})
         raise AssertionError("replayed forward rows differ from persisted CSV: " + json.dumps(differences[:3], ensure_ascii=False))
-    return {"replay_verified": True, "row_count": len(expected), "code_commit": manifest["code_commit"]}
+    return {
+        "replay_verified": True,
+        "row_count": len(expected),
+        "code_commit": manifest.get("code_commit", ""),
+        "code_identity": manifest.get("code_identity"),
+    }
 
 
 def main() -> int:

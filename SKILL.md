@@ -124,13 +124,13 @@ python3 scripts/parse_bank_metrics.py \
   ./bank_reports/601229_text/*年度报告*.md --out ./bank_quality_metrics.csv
 ```
 
-Combine all bank rows into `a_dividend_outputs/{YYYYMMDD}/market_data/bank_quality_metrics.csv`. The parser must retain source file, page, and raw evidence. The formal run stops if any preflight bank lacks three complete annual observations or any required metric; missing values are `data_gap`, never zero. Refresh the compact stock map when the preflight bank set changes.
+Combine all bank rows into `{data_root}/a_dividend_outputs/{YYYYMMDD}/market_data/bank_quality_metrics.csv`. The shared report cache belongs at `{data_root}/_bank_report_cache`, outside the skill installation. The parser must retain source file, page, and raw evidence. The formal run stops if any preflight bank lacks three complete annual observations or any required metric; missing values are `data_gap`, never zero. Refresh the compact stock map when the preflight bank set changes.
 
 For a standalone batch repair:
 
 ```bash
 python3 scripts/prepare_bank_metrics.py \
-  --output a_dividend_outputs/YYYYMMDD/market_data/bank_quality_metrics.csv \
+  --output data/a_dividend_outputs/YYYYMMDD/market_data/bank_quality_metrics.csv \
   --as-of-date YYYYMMDD --bank-codes 600036.SH 601398.SH
 ```
 
@@ -142,6 +142,18 @@ The main command runs both the formal screen and forward-dividend analysis by de
 python3 scripts/run_a_dividend_strategy.py \
   --run-date YYYYMMDD
 ```
+
+Runtime data must never be stored inside the installed skill directory. The data-root precedence is: explicit `--data-root`, `AHONGLI_DATA_ROOT`, then `<workspace>/data` when installed at `<workspace>/.agents/skills/ahongli`; other installations use the invoking working directory's `./data`. Invoke an installed script from the user's project workspace rather than changing into a global skill directory. Report the resolved data root at handoff. For an explicit portable location:
+
+```bash
+python3 .agents/skills/ahongli/scripts/run_a_dividend_strategy.py \
+  --run-date YYYYMMDD \
+  --data-root ./data
+```
+
+Do not initialize a temporary `.git` inside an installed skill. Replay manifests use the Git commit in a real checkout and a deterministic runtime-tree SHA-256 in a packaged installation without Git metadata.
+
+This change does not move legacy installation-local data automatically. Before resynchronizing an existing skill, copy any needed `a_dividend_outputs/` and `_bank_report_cache/` into the resolved persistent data root and verify the copied files; do not delete the originals as part of the runner.
 
 Use `--skip-fetch` only when the market, profile, and structured-factor caches cover the applicable stage. Use `--refresh-constituents` when the user asks for a fresh CSI 300 universe.
 
@@ -159,14 +171,14 @@ Keep the formal threshold at 3%. For counterfactual threshold research, use the 
 
 ```bash
 python3 scripts/simulate_dividend_threshold.py \
-  --run-date YYYYMMDD --yield-threshold 2.5
+  --run-date YYYYMMDD --yield-threshold 2.5 --data-root ./data
 ```
 
-Simulation output goes to `a_dividend_outputs/{YYYYMMDD}_sim_yield_{threshold}/`. Never present a simulation as the formal strategy result.
+Simulation output goes to `{data_root}/a_dividend_outputs/{YYYYMMDD}_sim_yield_{threshold}/`. Never present a simulation as the formal strategy result.
 
 ## Outputs
 
-Write under `a_dividend_outputs/{YYYYMMDD}/`:
+Write under `{data_root}/a_dividend_outputs/{YYYYMMDD}/`:
 
 - `hs300-dividend-candidates-{YYYYMMDD}.csv` with all 300 constituents;
 - `hs300-dividend-top10-{YYYYMMDD}.csv` containing only all-gate passers;
@@ -190,7 +202,7 @@ The forward stage remains a separate transaction that consumes an already-writte
 ```bash
 python3 scripts/run_forward_dividend_analysis.py \
   --run-date YYYYMMDD \
-  --top10 a_dividend_outputs/YYYYMMDD/hs300-dividend-top10-YYYYMMDD.csv
+  --top10 data/a_dividend_outputs/YYYYMMDD/hs300-dividend-top10-YYYYMMDD.csv
 ```
 
 After the run status, the command prints a compact A-share Top10 main table to stdout with only the formal rank, company, score, A-share quote, base forecast DPS, expected yield, next payment date, target position, target-yield range, and target-price range. The persisted CSV and per-company detail remain the auditable sources of truth for model inputs, DPS scenarios, dividend-event dates, evidence completeness, and uncertainty.
@@ -201,7 +213,7 @@ Use `--skip-prepare` only when every applicable Top10 evidence directory already
 
 The forward stage writes separate CSV, Markdown, HTML, run-status, source, fact, event, result, and per-company evidence artifacts. Derive the target-yield range as required total return minus sustainable dividend growth, using a dated risk-free rate and versioned industry risk/growth parameters. Never infer the target range from current price, current yield, or historical yield percentiles. Display only neutral target-position labels; the corresponding target-price range is a mechanical DPS/yield conversion, not intrinsic value or an investment instruction.
 
-Every successful run must write `market_data/forward-dividend-replay-manifest.json` plus the exact policy snapshot. The manifest records the clean Git commit, runner parameters, Top10 hash, per-company evidence and original source-document hashes, policy hash, and forward CSV hash. Verify an archived run offline with `python3 scripts/forward_replay.py --manifest <path>`; hash mismatch, code mismatch, or any recomputed CSV field mismatch fails verification.
+Every successful run must write `market_data/forward-dividend-replay-manifest.json` plus the exact policy snapshot. The manifest records the real Git commit when the skill root is a clean checkout, otherwise a deterministic packaged runtime-tree SHA-256; it also records runner parameters, Top10 hash, per-company evidence and original source-document hashes, policy hash, and forward CSV hash. Verify an archived run offline with `python3 scripts/forward_replay.py --manifest <path>`; hash mismatch, code mismatch, or any recomputed CSV field mismatch fails verification.
 
 Each normalized fact references a stable `evidence_span_id`; each span retains the source document ID, page, raw excerpt, and extractor version. Persist low/base/high profit and payout inputs plus fact-selection decisions. After actual regular DPS is disclosed, use `evaluate_forecast_accuracy.py` to retain signed/absolute error, relative error, range coverage, and model version.
 

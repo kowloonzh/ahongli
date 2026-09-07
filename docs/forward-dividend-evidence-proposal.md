@@ -189,7 +189,7 @@ forecast_reason = 具体缺失项
 ```bash
 python3 scripts/run_forward_dividend_analysis.py \
   --run-date YYYYMMDD \
-  --top10 a_dividend_outputs/YYYYMMDD/hs300-dividend-top10-YYYYMMDD.csv
+  --top10 data/a_dividend_outputs/YYYYMMDD/hs300-dividend-top10-YYYYMMDD.csv
 ```
 
 前瞻功能稳定后，主runner可以增加显式 `--with-forward-dividend` 选项，但内部仍必须先提交事务A的正式产物，再执行事务B。阶段5至8失败时，不得回滚、覆盖或删除阶段1至4产物。
@@ -248,7 +248,7 @@ forward_12m_eligible_dps
 建议每家公司建立独立证据目录：
 
 ```text
-a_dividend_outputs/{run_date}/market_data/forward_dividend_evidence/
+{data_root}/a_dividend_outputs/{run_date}/market_data/forward_dividend_evidence/
 └── {ts_code}/
     ├── manifest.json
     ├── reports/
@@ -744,7 +744,7 @@ expected_yield < target_yield_low
 保留现有所有正式输出，额外新增：
 
 ```text
-a_dividend_outputs/{run_date}/
+{data_root}/a_dividend_outputs/{run_date}/
 ├── hs300-dividend-forward-top10-{run_date}.csv
 ├── hs300-dividend-forward-report-{run_date}.md
 ├── hs300-dividend-forward-dashboard-{run_date}.html

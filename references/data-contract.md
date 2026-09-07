@@ -19,6 +19,8 @@ Financial API date-range inputs filter announcement dates. Query through `run_da
 
 Persist source query parameters, fetch timestamp, fields, row counts, failed segments, and deduplication decisions. The constituent cache must contain all mandatory company-profile fields for exactly 300 unique codes. Market-preflight failures do not require detailed financial-factor caches beyond common benchmark data.
 
+All mutable runtime data lives under a persistent `{data_root}` outside the installed skill: formal and forward results under `{data_root}/a_dividend_outputs/`, and downloaded/extracted bank reports under `{data_root}/_bank_report_cache/`. Resolve `{data_root}` from explicit CLI input, then `AHONGLI_DATA_ROOT`, then the project workspace. A packaged skill without `.git` uses a deterministic hash of runtime scripts and assets as its replay code identity; never create `.git` only to satisfy replay metadata.
+
 ## Output states
 
 - `selected`: all mandatory evidence present and every hard gate passed.

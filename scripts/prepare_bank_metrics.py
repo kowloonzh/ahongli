@@ -62,9 +62,12 @@ def select_latest_three_complete_annual_rows(
 
 
 def _default_cache_root(output_path: Path) -> Path:
-    parents = output_path.resolve().parents
-    output_root = parents[2] if len(parents) > 2 else output_path.resolve().parent
-    return output_root / "_bank_report_cache"
+    resolved = output_path.resolve()
+    output_root = next(
+        (parent for parent in resolved.parents if parent.name == "a_dividend_outputs"),
+        None,
+    )
+    return (output_root.parent if output_root is not None else resolved.parent) / "_bank_report_cache"
 
 
 def _prepare_one_bank(

@@ -2,6 +2,7 @@ import csv
 import hashlib
 import importlib.util
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -24,6 +25,41 @@ def load_script(name):
 
 
 class ForwardReplayTest(unittest.TestCase):
+    def test_installed_skill_without_git_uses_deterministic_code_tree_identity(self):
+        replay = load_script("forward_replay")
+        identity_builder = getattr(replay, "_code_identity", None)
+        self.assertTrue(callable(identity_builder), "缺少无Git技能包代码身份函数")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+            subprocess.run(
+                [
+                    "git", "-c", "user.name=AHongli Test", "-c", "user.email=test@example.invalid",
+                    "commit", "--allow-empty", "-q", "-m", "host project",
+                ],
+                cwd=workspace,
+                check=True,
+            )
+            skill_root = workspace / ".agents" / "skills" / "ahongli"
+            scripts = skill_root / "scripts"
+            assets = skill_root / "assets"
+            scripts.mkdir(parents=True)
+            assets.mkdir()
+            (scripts / "runner.py").write_text("print('ok')\n", encoding="utf-8")
+            (assets / "policy.json").write_text('{"version": 1}\n', encoding="utf-8")
+
+            first = identity_builder(skill_root)
+            second = identity_builder(skill_root)
+            git_created = (skill_root / ".git").exists()
+
+        self.assertEqual(first, second)
+        self.assertEqual(first["kind"], "tree_sha256")
+        self.assertEqual(len(first["revision"]), 64)
+        self.assertFalse(first["dirty"])
+        self.assertFalse(git_created)
+
     def test_manifest_replays_forecast_from_hashed_inputs(self):
         runner = load_script("run_forward_dividend_analysis")
         replay = load_script("forward_replay")
