@@ -158,7 +158,7 @@ class ForecastSelectedDividendsTest(unittest.TestCase):
 
         result = module.next_dividend_schedule(events, as_of_date="20260905")
 
-        self.assertEqual(result["next_dividend_date_status"], "not_announced")
+        self.assertEqual(result["next_dividend_date_status"], "no_upcoming_payment")
         self.assertIsNone(result["next_dividend_event_id"])
 
     def test_policy_forecast_builds_ttm_scenarios_without_changing_formal_rank(self):

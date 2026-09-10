@@ -320,7 +320,10 @@ def forecast_company(
             "evidence_completeness": "missing",
             "forecast_uncertainty": "not_estimable",
             "forecast_status": "data_gap",
-            "forecast_reason": "缺少强制事实：" + "、".join(missing),
+            "forecast_reason": "缺少强制事实：" + "、".join(missing) + (
+                "；" + str(facts["payout_gap_reason"])
+                if "official_payout_ratio" in missing and facts.get("payout_gap_reason") else ""
+            ),
             "forecast_input_fact_ids": facts.get("forecast_input_fact_ids", []),
             "forecast_input_event_ids": facts.get("forecast_input_event_ids", []),
         }

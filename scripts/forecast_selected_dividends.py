@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+from nonfinancial_history_model import forecast_history, supports_history
+
 from collections import Counter
+from datetime import datetime
 import statistics
 from typing import Any
 
@@ -30,30 +33,51 @@ def next_dividend_schedule(
     *,
     as_of_date: str,
 ) -> dict[str, Any]:
+    """Issuer payment calendar, independent of a new buyer's entitlement.
+
+    Today's announced payment remains visible all day; this is not confirmation
+    that cash has arrived. An ex-dividend event can still have a future payment.
+    """
     cutoff = _compact_date(as_of_date)
+    datetime.strptime(cutoff, "%Y%m%d")
+
+    def calendar_date(value):
+        date = _compact_date(value)
+        try:
+            datetime.strptime(date, "%Y%m%d")
+        except ValueError:
+            return ""
+        return date
+
     relevant = [
         event
         for event in events
         if event.get("regular_or_special") == "regular"
         and event.get("share_class") in {None, "", "A"}
         and event.get("currency") in {None, "", "CNY"}
+        and (not event.get("available_date")
+             or bool(calendar_date(event["available_date"]))
+             and calendar_date(event["available_date"]) <= cutoff)
     ]
     scheduled = [
         event
         for event in relevant
-        if _compact_date(event.get("ex_dividend_date")) > cutoff
-        and _compact_date(event.get("payment_date"))
+        if event.get("status") == "implementation"
+        and calendar_date(event.get("payment_date")) >= cutoff
     ]
     if scheduled:
         selected = min(
             scheduled,
             key=lambda event: (
-                _compact_date(event.get("ex_dividend_date")),
                 _compact_date(event.get("payment_date")),
+                _compact_date(event.get("ex_dividend_date")),
+                str(event.get("event_id") or ""),
             ),
         )
         return {
-            "next_dividend_date_status": "scheduled",
+            "next_dividend_date_status": (
+                "payment_today" if _compact_date(selected.get("payment_date")) == cutoff else "scheduled"
+            ),
             "next_dividend_event_id": selected.get("event_id"),
             "next_dividend_record_date": _compact_date(selected.get("record_date")) or None,
             "next_dividend_ex_date": _compact_date(selected.get("ex_dividend_date")) or None,
@@ -79,7 +103,6 @@ def next_dividend_schedule(
         event
         for event in relevant
         if event.get("status") not in {None, "", "implementation"}
-        and not _compact_date(event.get("payment_date"))
         and int(str(event.get("fiscal_period") or "0")[:4] or 0) >= cutoff_year - 1
         and str(event.get("fiscal_period") or "") not in completed_periods
         and (
@@ -99,7 +122,7 @@ def next_dividend_schedule(
         }
 
     return {
-        "next_dividend_date_status": "not_announced",
+        "next_dividend_date_status": "no_upcoming_payment",
         "next_dividend_event_id": None,
         "next_dividend_record_date": None,
         "next_dividend_ex_date": None,
@@ -341,6 +364,17 @@ def _model_facts(
         result["payout_method"] = "policy_derived"
         if policy.get("fact_id"):
             input_fact_ids.append(str(policy["fact_id"]))
+    constraints = [
+        fact for fact in _facts(evidence, "payout_policy_constraint")
+        if (fact.get("valid_from") is None or int(fact["valid_from"]) <= forecast_year)
+        and (fact.get("valid_to") is None or int(fact["valid_to"]) >= forecast_year)
+    ]
+    if not policy and constraints:
+        result["payout_gap_reason"] = (
+            "已获取分红政策，但政策口径不是年度现金股息/归母净利润"
+            "（涉及可分配利润、分配总额或含回购）；当前模型不可直接换算DPS"
+        )
+        input_fact_ids.extend(str(fact["fact_id"]) for fact in constraints if fact.get("fact_id"))
     is_bank = _truthy((company or {}).get("is_bank")) or "银行" in str((company or {}).get("industry") or "")
     is_insurance = "保险" in str((company or {}).get("industry") or "")
     if is_bank or is_insurance:
@@ -412,6 +446,11 @@ def forecast_selected_dividends(
         else:
             model_facts = _model_facts(evidence, run_date, row)
             forecast = forecast_company(company=row, facts=model_facts)
+            if forecast.get("forecast_status") in {"data_gap", "unsupported"} and supports_history(row):
+                prior_reason = forecast.get("forecast_reason", "")
+                forecast = forecast_history(row, evidence, run_date)
+                if forecast["forecast_status"] == "data_gap":
+                    forecast["forecast_reason"] += "；原政策模型：" + prior_reason
         target = target_yield_from_analysis(
             company=row, risk_free_rate=risk_free_rate, policy=target_yield_policy
         )

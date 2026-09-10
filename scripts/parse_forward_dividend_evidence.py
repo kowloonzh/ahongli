@@ -10,10 +10,12 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from document_cache import atomic_write_text
+from document_cache import atomic_write_text, file_sha256
+from nonfinancial_history_evidence import extract_history_facts
 
 
 STATUS_ORDER = {"dividend_plan": 1, "dividend_policy": 1, "implementation": 2}
+EXTRACTOR_VERSION = "pdftotext-layout-regex-v3"
 
 
 def split_extracted_pages(text: str) -> list[dict[str, Any]]:
@@ -48,14 +50,29 @@ def extract_document_pages(
     stem = f"{document['announcement_id']}-{document['logical_role']}"
     text_path = extracted / f"{stem}.txt"
     pages_path = extracted / f"{stem}.pages.json"
-    if pages_path.exists():
-        return json.loads(pages_path.read_text(encoding="utf-8"))
+    cache_path = extracted / f"{stem}.cache.json"
+    source_hash = file_sha256(source_path)
+    if document.get("sha256") and document["sha256"] != source_hash:
+        raise ValueError(f"PDF hash mismatch before extraction: {source_path}")
+    try:
+        metadata = json.loads(cache_path.read_text(encoding="utf-8"))
+        if (metadata.get("source_sha256") == source_hash
+                and metadata.get("extractor_version") == EXTRACTOR_VERSION
+                and metadata.get("pages_sha256") == file_sha256(pages_path)):
+            pages = json.loads(pages_path.read_text(encoding="utf-8"))
+            if isinstance(pages, list) and all(isinstance(p, dict) and "page" in p and "text" in p for p in pages):
+                return pages
+    except (OSError, ValueError, AttributeError):
+        pass
     command_runner(
         ["pdftotext", "-layout", str(source_path), str(text_path)],
         check=True,
     )
     pages = split_extracted_pages(text_path.read_text(encoding="utf-8", errors="replace"))
     atomic_write_text(pages_path, json.dumps(pages, ensure_ascii=False, indent=2))
+    atomic_write_text(cache_path, json.dumps({"source_sha256": source_hash,
+                                            "extractor_version": EXTRACTOR_VERSION,
+                                            "pages_sha256": file_sha256(pages_path)}, indent=2))
     return pages
 
 
@@ -186,10 +203,15 @@ def parse_policy_facts(
     source: dict[str, Any],
     ts_code: str,
 ) -> dict[str, Any]:
-    period = re.search(r"(20\d{2})\s*年?至\s*(20\d{2})\s*年", text)
+    original_text = text
+    text = re.sub(r"\s+", "", text)
+    period = re.search(
+        r"(20\d{2})年?[至—–－-](20\d{2})年",
+        text + re.sub(r"\s+", "", str(source.get("source_title") or "")),
+    )
     duration = re.search(r"从\s*(20\d{2})\s*年起[，,]?\s*([一二三四五六七八九十\d]+)\s*年内", text)
     ratio = re.search(
-        r"(?:以现金方式分配的利润|现金分红比例|现金分红)[^。；%]{0,100}?(?:不低于|至少)"
+        r"(?:以现金方式分配的利润|现金分红比例|现金分红)[^。；%]{0,100}?(?:不低于|不少于|至少)"
         r"[^0-9]{0,12}([0-9]+(?:\.[0-9]+)?)\s*%",
         text,
     )
@@ -210,6 +232,31 @@ def parse_policy_facts(
         text,
     )
     facts: dict[str, Any] = {"ts_code": ts_code}
+    policy_context = text + re.sub(r"\s+", "", str(source.get("policy_context") or ""))
+    includes_buybacks = bool(re.search(r"回购[^。；]{0,100}(?:视同|纳入)[^。；]{0,30}(?:现金分红|分红)", policy_context))
+    # These are not annual cash dividends / parent net profit. Retain the
+    # unsupported basis as evidence instead of silently treating it as DPS policy.
+    distributable = re.search(r"(?:不低于|不少于|至少)[^。；]{0,25}最近三年[^。；]{0,20}年均可分配利润的([0-9.]+)%", text)
+    distribution = re.search(r"现金分红在[^。；]{0,20}利润分配中[^。；]{0,30}?([0-9]+(?:\.[0-9]+)?)%", text)
+    constraint = distributable or distribution or (ratio if includes_buybacks else None)
+    if constraint:
+        facts["payout_policy_constraint"] = {
+            "value": float(constraint.group(1)) / 100,
+            "unit": "ratio",
+            "denominator_basis": (
+                "three_year_average_distributable_profit" if distributable else
+                "total_profit_distribution" if distribution else "parent_net_profit"
+            ),
+            "includes_buybacks": includes_buybacks,
+            "valid_from": int(period.group(1)) if period else None,
+            "valid_to": int(period.group(2)) if period else None,
+            "source_document_id": str(source.get("announcement_id") or ""),
+            "source_file": str(source.get("source_file") or ""),
+            "source_page_or_location": source.get("page"),
+            "raw_evidence": original_text.strip(),
+        }
+    if includes_buybacks or (ratio and re.search(r"可分配利润|利润分配中", ratio.group(0))):
+        return facts
     if ratio or (stable_future and prior_rate):
         value = float(ratio.group(1) if ratio else prior_rate.group(1)) / 100.0
         if period:
@@ -230,7 +277,7 @@ def parse_policy_facts(
             "source_document_id": str(source.get("announcement_id") or ""),
             "source_file": str(source.get("source_file") or ""),
             "source_page_or_location": source.get("page"),
-            "raw_evidence": text.strip(),
+            "raw_evidence": original_text.strip(),
         }
     return facts
 
@@ -247,17 +294,32 @@ def parse_historical_payout_fact(
         r"([0-9]+(?:\.[0-9]+)?)\s*%",
         text,
     )
+    table_evidence = None
     if not match:
-        return None
+        # Shenzhen reports put the ratio heading above the year-labelled rows.
+        # A row for 2024 in a 2025 report must remain a 2024 fact.
+        heading = re.search(r"现金分红总额占归属于上市公司股[\s\S]{0,120}?东的净利润比例", text)
+        if not heading:
+            return None
+        rows = list(re.finditer(r"(?m)^\s*(20\d{2})\s+[^\n%]+?\s+([0-9]+(?:\.[0-9]+)?)\s*%", text[heading.end():]))
+        rows = [row for row in rows if not period or row.group(1) <= period[:4]]
+        if not rows:
+            return None
+        row = max(rows, key=lambda item: item.group(1))
+        period = row.group(1) + "1231"
+        value = float(row.group(2)) / 100
+        table_evidence = heading.group(0) + "\n" + row.group(0)
+    else:
+        value = float(match.group(1)) / 100
     return {
-        "value": round(float(match.group(1)) / 100.0, 8),
+        "value": round(value, 8),
         "unit": "ratio",
         "period": period,
         "source_document_id": str(source.get("announcement_id") or ""),
         "source_file": str(source.get("source_file") or ""),
         "source_page_or_location": source.get("page"),
         "reporting_entity": ts_code,
-        "raw_evidence": match.group(0),
+        "raw_evidence": table_evidence or match.group(0),
     }
 
 
@@ -291,13 +353,30 @@ def _metric_multiplier(line: str, page_text: str) -> float | None:
 
 
 def _extract_metric_series(text: str, labels: list[str]) -> tuple[list[float], str] | None:
+    if re.search(r"第一季度[\s\S]{0,150}第二季度", text):
+        return None  # A quarterly breakdown is not an annual/comparable series.
     lines = text.splitlines()
     for index, line in enumerate(lines):
         label = next((candidate for candidate in labels if candidate in line), None)
         if not label:
             continue
-        combined = " ".join(lines[index : index + 3])
-        segment = combined.split(label, 1)[1]
+        segment = line.split(label, 1)[1]
+        combined = line
+        if not re.search(r"[0-9]", segment):
+            # Allow a metric label followed by a numeric row, but not a column
+            # header followed by years, another metric, or a page footer.
+            if not re.fullmatch(r"[\s（()）人民币百千万亿元]*", segment):
+                continue
+            following = next((item for item in lines[index + 1:index + 4] if item.strip()), "")
+            if not re.match(r"\s*[+-]?[0-9]", following):
+                continue
+            segment += " " + following
+            combined += "\n" + following
+        if re.search(r"20\d{2}\s*年", segment):
+            continue
+        first_number = re.search(r"[+-]?[0-9]", segment)
+        if not first_number or not re.fullmatch(r"[\s（()）人民币百千万亿元为是:：]*", segment[:first_number.start()]):
+            continue
         value_segment = re.split(r"同比|较上年|增长|下降", segment, maxsplit=1)[0]
         value_segment = re.sub(r"[+-]?[0-9][0-9,]*(?:\.[0-9]+)?\s*%", "", value_segment)
         numbers = re.findall(r"[+-]?[0-9][0-9,]*(?:\.[0-9]+)?", value_segment)
@@ -407,13 +486,15 @@ def _fact_record(
 ) -> dict[str, Any]:
     span_identity = (
         f"{fact.get('source_document_id')}|{fact.get('source_page_or_location')}|"
-        f"{fact.get('raw_evidence')}|pdftotext-layout-regex-v1"
+        f"{fact.get('raw_evidence')}|{EXTRACTOR_VERSION}"
     )
     evidence_span_id = hashlib.sha256(span_identity.encode("utf-8")).hexdigest()[:24]
     identity = (
         f"{ts_code}|{fact_type}|{fact.get('period')}|{fact.get('source_document_id')}|"
         f"{fact.get('source_page_or_location')}|{fact.get('value')}|{fact.get('unit')}"
     )
+    if fact.get("distribution_phase"):
+        identity += "|" + str(fact["distribution_phase"])
     return {
         "fact_id": hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24],
         "fact_type": fact_type,
@@ -432,14 +513,19 @@ def parse_company_evidence(
     ts_code = str(manifest["ts_code"])
     facts: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
+    pages_by_id = {}
     for document in manifest.get("documents", []):
         role = document.get("logical_role")
         period = _period_from_document(document)
         previous_unit_context = ""
-        for page in page_provider(document, manifest_path.parent):
+        pages = list(page_provider(document, manifest_path.parent))
+        pages_by_id[str(document["announcement_id"])] = pages
+        policy_context = "\n".join(str(page.get("text") or "") for page in pages) if role == "dividend_policy" else ""
+        for page in pages:
             source = {
                 **document,
                 "page": page.get("page"),
+                "policy_context": policy_context,
             }
             text = str(page.get("text") or "")
             financial_text = f"{previous_unit_context}\n{text}" if previous_unit_context else text
@@ -474,6 +560,9 @@ def parse_company_evidence(
             if "official_payout_floor" in policy_parsed:
                 policy = {**policy_parsed["official_payout_floor"], "period": period}
                 facts.append(_fact_record("official_payout_floor", policy, ts_code=ts_code))
+            if "payout_policy_constraint" in policy_parsed:
+                constraint = {**policy_parsed["payout_policy_constraint"], "period": period}
+                facts.append(_fact_record("payout_policy_constraint", constraint, ts_code=ts_code))
             payout = parse_historical_payout_fact(
                 text,
                 source=source,
@@ -488,6 +577,8 @@ def parse_company_evidence(
                 if "单位" in line and any(unit in line for unit in ["元", "萬元", "百萬元", "亿元", "億元"])
             ]
             previous_unit_context = "\n".join(unit_lines[-3:])
+    for fact in extract_history_facts(manifest.get("documents", []), pages_by_id):
+        facts.append(_fact_record(fact["fact_type"], {**fact, "reporting_entity": ts_code}, ts_code=ts_code))
     evidence_spans_by_id: dict[str, dict[str, Any]] = {}
     for fact in facts:
         span_id = str(fact["evidence_span_id"])
@@ -498,7 +589,7 @@ def parse_company_evidence(
                 "source_document_id": fact.get("source_document_id"),
                 "source_page_or_location": fact.get("source_page_or_location"),
                 "raw_evidence": fact.get("raw_evidence"),
-                "extraction_backend": "pdftotext-layout-regex-v1",
+                "extraction_backend": EXTRACTOR_VERSION,
             },
         )
     result = {

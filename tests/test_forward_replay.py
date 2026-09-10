@@ -105,7 +105,10 @@ class ForwardReplayTest(unittest.TestCase):
             self.assertTrue(verified["replay_verified"])
             self.assertEqual(verified["row_count"], 1)
             payload = json.loads(manifest.read_text(encoding="utf-8"))
-            self.assertEqual(len(payload["code_commit"]), 40)
+            identity = payload["code_identity"]
+            self.assertIn(identity["kind"], {"git", "tree_sha256"})
+            self.assertEqual(len(identity["revision"]), 40 if identity["kind"] == "git" else 64)
+            self.assertEqual(payload["code_commit"], identity["revision"] if identity["kind"] == "git" else "")
             self.assertEqual(len(payload["policy"]["sha256"]), 64)
             self.assertEqual(len(payload["inputs"]["top10_sha256"]), 64)
             self.assertEqual(len(payload["outputs"]["forward_csv_sha256"]), 64)

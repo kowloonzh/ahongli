@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from announcement_resolver import resolve_announcements
-from document_cache import atomic_write_text, store_document
+from document_cache import atomic_write_text
+from forward_document_cache import ForwardDocumentCache
 
 
 def collect_candidate_announcements(
@@ -24,6 +25,8 @@ def collect_candidate_announcements(
         {"category": "category_ndbg_szsh", "searchkey": ""},
         {"category": "category_bndbg_szsh", "searchkey": ""},
         {"category": "", "searchkey": "分红回报规划"},
+        {"category": "", "searchkey": "股东回报规划"},
+        {"category": "", "searchkey": "分红政策"},
         {"category": "", "searchkey": "利润分配"},
         {"category": "", "searchkey": "权益分派"},
     ]
@@ -93,12 +96,14 @@ def prepare_forward_evidence(
     evidence_root: Path,
     client,
     download_bytes: Callable[[str], bytes],
+    refresh_documents: bool = False,
 ) -> list[dict[str, Any]]:
     selected = [row for row in top_rows if str(row.get("selected", "是")) == "是"]
     if len(selected) > 10:
         raise ValueError("forward evidence accepts at most ten formal selected rows")
     evidence_root = Path(evidence_root)
     evidence_root.mkdir(parents=True, exist_ok=True)
+    document_cache = ForwardDocumentCache(evidence_root)
     year = int(str(run_date)[:4])
     results: list[dict[str, Any]] = []
     for row in selected:
@@ -127,21 +132,19 @@ def prepare_forward_evidence(
                 documents = []
                 for source in sources:
                     role_dir = "reports" if source["logical_role"] in {"annual", "interim"} else "announcements"
-                    stored = store_document(
+                    stored = document_cache.get(
+                        code=code,
+                        source=source,
                         directory=company_dir / role_dir,
-                        announcement_id=source["announcement_id"],
-                        logical_role=source["logical_role"],
-                        suffix=".pdf",
-                        content=download_bytes(source["source_url"]),
+                        download_bytes=download_bytes,
+                        refresh=refresh_documents,
                     )
                     documents.append(
                         {
                             **source,
+                            **stored,
                             "source_final_url": source["source_url"],
-                            "retrieved_at": dt.datetime.now(dt.UTC).isoformat(),
                             "source_file": f"{role_dir}/{stored['source_file']}",
-                            "sha256": stored["sha256"],
-                            "cache_status": stored["cache_status"],
                         }
                     )
                 manifest = {

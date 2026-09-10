@@ -359,7 +359,7 @@ class ForwardDividendEvidenceTest(unittest.TestCase):
                 run_date="20260902",
                 evidence_root=Path(tmp),
                 client=Client(),
-                download_bytes=lambda url: b"pdf bytes",
+                download_bytes=lambda url: b"%PDF-1.4 pdf bytes",
             )
 
             self.assertEqual(set(queried), {"600900.SH"})
@@ -369,7 +369,8 @@ class ForwardDividendEvidenceTest(unittest.TestCase):
             payload = json.loads(manifest.read_text(encoding="utf-8"))
             self.assertEqual(payload["documents"][0]["source_final_url"], payload["documents"][0]["source_url"])
             self.assertTrue(payload["documents"][0]["retrieved_at"].endswith("+00:00"))
-            self.assertEqual(payload["documents"][0]["cache_status"], "stored")
+            self.assertEqual(payload["documents"][0]["cache_status"], "downloaded")
+            self.assertEqual(payload["documents"][0]["storage_status"], "stored")
             self.assertFalse((Path(tmp) / "600001.SH").exists())
 
     def test_one_company_download_failure_does_not_abort_other_top10_evidence(self):
@@ -396,7 +397,7 @@ class ForwardDividendEvidenceTest(unittest.TestCase):
                 run_date="20260902",
                 evidence_root=Path(tmp),
                 client=Client(),
-                download_bytes=lambda url: b"pdf bytes",
+                download_bytes=lambda url: b"%PDF-1.4 pdf bytes",
             )
 
             self.assertEqual([row["status"] for row in result], ["normal", "failed"])
