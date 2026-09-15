@@ -303,6 +303,25 @@ def _model_facts(
             float(event["cash_dividend_per_share_pre_tax"])
             for event in phased
         )
+    elif phased:
+        selected_by_phase: dict[str, dict[str, Any]] = {}
+        for event in phased:
+            phase = str(event.get("distribution_phase") or "")
+            current_event = selected_by_phase.get(phase)
+            if current_event is None or (
+                str(event.get("status") or "") == "implementation"
+                and str(current_event.get("status") or "") != "implementation"
+            ):
+                selected_by_phase[phase] = event
+        result["announced_dividend_floor"] = sum(
+            float(event["cash_dividend_per_share_pre_tax"])
+            for event in selected_by_phase.values()
+        )
+        input_event_ids.extend(
+            str(event["event_id"])
+            for event in selected_by_phase.values()
+            if event.get("event_id")
+        )
     if annual and current and prior:
         input_fact_ids.extend(
             str(fact["fact_id"])
@@ -385,7 +404,21 @@ def _model_facts(
         selection_decisions.extend(payout_decisions)
         if len(latest_values) == 3:
             historical_median = statistics.median(latest_values)
-            if "official_payout_ratio" not in result:
+            if is_insurance:
+                policy_ratio = result.get("official_payout_ratio")
+                result["payout_ratio_scenarios"] = {
+                    "low": min(
+                        [*latest_values, float(policy_ratio)]
+                        if policy_ratio is not None else latest_values
+                    ),
+                    "base": historical_median,
+                    "high": max(latest_values),
+                }
+                result["official_payout_ratio"] = historical_median
+                result["payout_method"] = (
+                    "policy_and_history" if policy_ratio is not None else "historical_payout"
+                )
+            elif "official_payout_ratio" not in result:
                 result["official_payout_ratio"] = historical_median
                 result["payout_method"] = "historical_payout"
             elif is_bank and historical_median > float(result["official_payout_ratio"]):
@@ -399,6 +432,24 @@ def _model_facts(
                 result["payout_method"] = "policy_and_history"
             input_fact_ids.extend(payout_fact_ids)
             input_event_ids.extend(payout_event_ids)
+    if is_insurance:
+        result["insurance_safety"] = {
+            "gate_passed": _truthy((company or {}).get("insurance_quality_gate_passed")),
+            "gate_status": str((company or {}).get("insurance_quality_gate_status") or ""),
+            "group_core_solvency_ratio": (company or {}).get("insurance_group_core_solvency_ratio"),
+            "group_comprehensive_solvency_ratio": (company or {}).get("insurance_group_comprehensive_solvency_ratio"),
+            "stressed_core_solvency_ratio": (company or {}).get("insurance_stressed_core_solvency_ratio"),
+            "stressed_comprehensive_solvency_ratio": (company or {}).get("insurance_stressed_comprehensive_solvency_ratio"),
+            "material_subsidiary_min_core_solvency_ratio": (company or {}).get("insurance_material_subsidiary_min_core_solvency_ratio"),
+            "material_subsidiary_min_comprehensive_solvency_ratio": (company or {}).get("insurance_material_subsidiary_min_comprehensive_solvency_ratio"),
+            "parent_available_funds_end": (company or {}).get("insurance_parent_available_funds_end"),
+            "parent_financing_proceeds": (company or {}).get("insurance_parent_financing_proceeds"),
+            "parent_subsidiary_investments": (company or {}).get("insurance_parent_subsidiary_investments"),
+            "parent_funds_bridge_reconciled": _truthy((company or {}).get("insurance_parent_funds_bridge_reconciled")),
+            "subsidiary_dividend_coverage": (company or {}).get("insurance_subsidiary_dividend_coverage"),
+            "source_documents_json": (company or {}).get("insurance_source_documents_json"),
+            "metric_evidence_json": (company or {}).get("insurance_metric_evidence_json"),
+        }
     result["evidence_completeness"] = "complete" if (
         "announced_regular_dps" in result
         or all(key in result for key in ["forecast_profit_scenarios", "forecast_total_shares", "official_payout_ratio"])

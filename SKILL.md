@@ -13,6 +13,8 @@ Read [references/strategy-spec.md](references/strategy-spec.md) before changing 
 
 Read [references/bank-metrics.md](references/bank-metrics.md) when collecting or evaluating bank-specific asset-quality, margin, provision, or regulatory-capital metrics. These metrics are part of the formal bank hard gates and score.
 
+Read [references/insurance-metrics.md](references/insurance-metrics.md) when collecting or evaluating insurer solvency, parent-company cash, subsidiary remittances, stress sensitivity, or forward DPS. Insurance safety gates are formal; insurance scoring remains in the other-financial model until point-in-time history supports separate weights.
+
 ## Required Skill
 
 Use `$tushare` for constituents, company profiles, market history, dividends, financial statements, audit results, and all structured evidence. This strategy does not consume subjective `financial-report-reader` analysis reports. Bank-only NPL, provision, NIM, efficiency, and regulatory-capital metrics are parsed deterministically from original annual reports.
@@ -67,6 +69,7 @@ Hard gates do not contribute points:
 - latest audited annual opinion is standard unqualified;
 - no direct property-development, property-sales, or commercial-property-operation main business.
 - banks additionally require three complete audited annual observations for all eight bank metrics, latest NPL ratio at most 2%, provision coverage at least 150%, actual loan provision ratio at least 2.5%, core Tier-1 capital at least 7.5%, Tier-1 capital at least 8.5%, and total capital adequacy at least 10.5%.
+- insurers additionally require three complete annual observations and the latest available periodic disclosure; clear group and material-subsidiary entity binding; group and material-subsidiary core solvency at least 50% and comprehensive solvency at least 100%; no disclosed C/D risk rating or explicit regulatory dividend restriction; and the same regulatory floors under each issuer-disclosed standalone group stress. Do not combine independent stresses.
 
 There is no company-quality category gate. Missing mandatory structured evidence is `data_gap`, not zero and not a hard-gate failure. Do not create a formal ranking while a required factor remains a data gap.
 
@@ -91,6 +94,8 @@ Financial weights:
 - five-year yield CV 20%;
 - actual consecutive dividend years 20%;
 - five-year comparable DPS CAGR 15%.
+
+Insurance companies continue to use these financial weights after passing the insurance safety gate. Run `simulate_insurance_scoring.py` for point-in-time research; do not activate separate formal insurance weights unless the research sample contains enough issuers and subsequent DPS-cut events.
 
 Bank weights:
 
@@ -132,6 +137,18 @@ For a standalone batch repair:
 python3 scripts/prepare_bank_metrics.py \
   --output data/a_dividend_outputs/YYYYMMDD/market_data/bank_quality_metrics.csv \
   --as-of-date YYYYMMDD --bank-codes 600036.SH 601398.SH
+```
+
+## Insurance Metrics Preparation
+
+For every market-preflight insurance company, the main runner prepares `market_data/insurance_quality_metrics.csv` from original issuer reports available by the run date. It keeps insurance-group, group-parent and material-subsidiary facts separate; retains the latest three complete annual reports plus the latest available interim/quarterly report; and stores page excerpts, announcement IDs, extractor version and stable evidence IDs. Shared files live in `{data_root}/_insurance_report_cache`.
+
+The parent cash bridge distinguishes fiscal-year DPS from cash actually paid in the period. Subsidiary remittances and ending available funds are reported as coverage fields; financing remains visible but never counts as operating dividend coverage. Missing subjects, periods, stresses, bridge reconciliation or required capital values is `data_gap` and stops formal ranking.
+
+```bash
+python3 scripts/prepare_insurance_metrics.py \
+  --output data/a_dividend_outputs/YYYYMMDD/market_data/insurance_quality_metrics.csv \
+  --as-of-date YYYYMMDD --insurance-codes 601318.SH
 ```
 
 ## Run
@@ -216,6 +233,8 @@ Normal preparation still queries current announcements and applies cutoff/revisi
 The forward stage writes separate CSV, Markdown, HTML, run-status, source, fact, event, result, and per-company evidence artifacts. Derive the target-yield range as required total return minus sustainable dividend growth, using a dated risk-free rate and versioned industry risk/growth parameters. Never infer the target range from current price, current yield, or historical yield percentiles. Display only neutral target-position labels; the corresponding target-price range is a mechanical DPS/yield conversion, not intrinsic value or an investment instruction.
 
 Every successful run must write `market_data/forward-dividend-replay-manifest.json` plus the exact policy snapshot. The manifest records the real Git commit when the skill root is a clean checkout, otherwise a deterministic packaged runtime-tree SHA-256; it also records runner parameters, Top10 hash, per-company evidence and original source-document hashes, policy hash, and forward CSV hash. Verify an archived run offline with `python3 scripts/forward_replay.py --manifest <path>`; hash mismatch, code mismatch, or any recomputed CSV field mismatch fails verification.
+
+Insurance uses `insurance_operating_profit_cash_capital_v3`. Low/base/high each have separate operating-profit and payout assumptions. DPS is limited by group-parent ending available funds net of disclosed financing; the low cash scenario also reserves the latest complete annual subsidiary-investment amount as an evidenced higher-funding-need case. Solvency ratios remain pass/fail constraints unless original evidence supports a post-dividend capital amount. An announced current-year interim regular dividend is a floor. Missing insurance safety or cash evidence returns `data_gap`; the forward transaction never edits the formal rank.
 
 Each normalized fact references a stable `evidence_span_id`; each span retains the source document ID, page, raw excerpt, and extractor version. Persist low/base/high profit and payout inputs plus fact-selection decisions. After actual regular DPS is disclosed, use `evaluate_forecast_accuracy.py` to retain signed/absolute error, relative error, range coverage, and model version.
 

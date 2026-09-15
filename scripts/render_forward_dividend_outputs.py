@@ -35,7 +35,10 @@ FORWARD_FIELDS = [
     "forecast_uncertainty", "forecast_status", "forecast_reason",
     "forecast_profit_low", "forecast_profit", "forecast_profit_high",
     "forecast_payout_ratio_low", "forecast_payout_ratio", "forecast_payout_ratio_high",
-    "forecast_total_shares", "announced_dividend_floor",
+    "forecast_total_shares", "forecast_cash_cap_total", "forecast_cash_cap_dps",
+    "forecast_cash_cap_total_low", "forecast_cash_cap_total_base", "forecast_cash_cap_total_high",
+    "forecast_cash_cap_dps_low", "forecast_cash_cap_dps_base", "forecast_cash_cap_dps_high",
+    "forecast_insurance_constraints", "announced_dividend_floor",
     "special_dividend_excluded", "forecast_input_fact_ids", "forecast_input_event_ids",
     "forecast_selection_decisions",
     "forecast_history", "forecast_ttm_cfo", "forecast_ttm_capex",
@@ -164,6 +167,18 @@ def _write_detail(
                       f"- 自由现金流代理/基准分红：{_number(row.get('forecast_fcf_dividend_coverage'), 4)}", ""])
         lines.extend(f"- {assumption}" for assumption in row.get("forecast_assumptions", []))
         lines.extend(["", "完整分期金额与去重、冲突、截止日选择记录随 CSV 的 forecast_history / forecast_selection_decisions 导出。"])
+    if row.get("forecast_insurance_constraints"):
+        lines.extend([
+            "", "## 保险资本与母公司资金约束", "",
+            "```json",
+            json.dumps(row.get("forecast_insurance_constraints"), ensure_ascii=False, indent=2),
+            "```", "",
+            f"- 母公司非融资现金金额上限：{_number(row.get('forecast_cash_cap_total'))}",
+            f"- 对应每股现金上限：{_number(row.get('forecast_cash_cap_dps'), 4)}",
+            f"- 低/基准/高每股现金上限：{_number(row.get('forecast_cash_cap_dps_low'), 4)} / "
+            f"{_number(row.get('forecast_cash_cap_dps_base'), 4)} / {_number(row.get('forecast_cash_cap_dps_high'), 4)}",
+        ])
+        lines.extend(f"- {assumption}" for assumption in row.get("forecast_assumptions", []))
     lines.extend([
         "",
         "## 预期股息率与目标区间",

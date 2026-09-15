@@ -18,6 +18,23 @@ def load_module():
 
 
 class ForwardDividendModelsTest(unittest.TestCase):
+    @staticmethod
+    def insurance_safety(**changes):
+        result = {
+            "gate_passed": True,
+            "group_core_solvency_ratio": 160.0,
+            "group_comprehensive_solvency_ratio": 190.0,
+            "stressed_core_solvency_ratio": 150.0,
+            "stressed_comprehensive_solvency_ratio": 180.0,
+            "material_subsidiary_min_core_solvency_ratio": 120.0,
+            "material_subsidiary_min_comprehensive_solvency_ratio": 170.0,
+            "parent_available_funds_end": 1000.0,
+            "parent_financing_proceeds": 0.0,
+            "parent_funds_bridge_reconciled": True,
+        }
+        result.update(changes)
+        return result
+
     def test_target_yield_policy_is_versioned_and_hashed(self):
         module = load_module()
 
@@ -244,15 +261,72 @@ class ForwardDividendModelsTest(unittest.TestCase):
                 "forecast_fiscal_year": 2026,
                 "operating_profit_scenarios": {"low": 110.0, "base": 120.0, "high": 130.0},
                 "official_payout_ratio": 0.30,
+                "payout_ratio_scenarios": {"low": 0.25, "base": 0.30, "high": 0.35},
                 "forecast_total_shares": 100.0,
                 "evidence_completeness": "complete",
+                "insurance_safety": self.insurance_safety(),
             },
         )
 
         self.assertEqual(result["forecast_status"], "modelled")
-        self.assertEqual(result["model_id"], "insurance_operating_profit_policy_v1")
+        self.assertEqual(result["model_id"], "insurance_operating_profit_cash_capital_v3")
         self.assertEqual(result["forecast_profit"], 120.0)
         self.assertAlmostEqual(result["forecast_fy_regular_dps_base"], 0.36)
+
+    def test_insurance_low_scenario_combines_lower_profit_and_lower_payout(self):
+        module = load_module()
+        result = module.forecast_company(
+            company={"industry": "保险"},
+            facts={
+                "forecast_fiscal_year": 2026,
+                "operating_profit_scenarios": {"low": 80.0, "base": 100.0, "high": 120.0},
+                "official_payout_ratio": 0.30,
+                "payout_ratio_scenarios": {"low": 0.20, "base": 0.30, "high": 0.35},
+                "forecast_total_shares": 100.0,
+                "insurance_safety": self.insurance_safety(),
+            },
+        )
+        self.assertAlmostEqual(result["forecast_fy_regular_dps_low"], 0.16)
+        self.assertAlmostEqual(result["forecast_fy_regular_dps_base"], 0.30)
+        self.assertAlmostEqual(result["forecast_fy_regular_dps_high"], 0.42)
+
+    def test_insurance_cash_cap_excludes_financing_and_does_not_convert_capital_ratio(self):
+        module = load_module()
+        result = module.forecast_company(
+            company={"industry": "保险"},
+            facts={
+                "forecast_fiscal_year": 2026,
+                "operating_profit_scenarios": {"low": 100.0, "base": 120.0, "high": 140.0},
+                "official_payout_ratio": 0.50,
+                "payout_ratio_scenarios": {"low": 0.40, "base": 0.50, "high": 0.60},
+                "forecast_total_shares": 10.0,
+                "insurance_safety": self.insurance_safety(
+                    parent_available_funds_end=45.0, parent_financing_proceeds=15.0,
+                    parent_subsidiary_investments=5.0,
+                ),
+            },
+        )
+        self.assertEqual(result["forecast_cash_cap_total"], 30.0)
+        self.assertEqual(result["forecast_cash_cap_dps"], 3.0)
+        self.assertEqual(result["forecast_cash_cap_dps_low"], 2.5)
+        self.assertEqual(result["forecast_fy_regular_dps_high"], 3.0)
+        self.assertIn("未在缺少分红后资本影响证据时换算", result["forecast_assumptions"][1])
+
+    def test_announced_interim_dividend_is_a_floor_under_lower_payout(self):
+        module = load_module()
+        result = module.forecast_company(
+            company={"industry": "保险"},
+            facts={
+                "forecast_fiscal_year": 2026,
+                "operating_profit_scenarios": {"low": 50.0, "base": 100.0, "high": 120.0},
+                "official_payout_ratio": 0.30,
+                "payout_ratio_scenarios": {"low": 0.10, "base": 0.30, "high": 0.35},
+                "forecast_total_shares": 100.0,
+                "announced_dividend_floor": 0.20,
+                "insurance_safety": self.insurance_safety(),
+            },
+        )
+        self.assertEqual(result["forecast_fy_regular_dps_low"], 0.20)
 
     def test_forward_twelve_month_dps_excludes_already_ex_dividend_events(self):
         module = load_module()

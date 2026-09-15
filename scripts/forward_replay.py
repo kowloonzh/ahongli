@@ -63,7 +63,8 @@ def _code_identity(repo: Path, *, kind: str | None = None) -> dict[str, Any]:
             if git_root != repo:
                 raise ValueError(f"skill root is nested inside a different Git repository: {git_root}")
             commit, dirty = _git_state(repo)
-            return {"kind": "git", "revision": commit, "dirty": dirty}
+            if not dirty or kind == "git":
+                return {"kind": "git", "revision": commit, "dirty": dirty}
         except (FileNotFoundError, subprocess.CalledProcessError, ValueError):
             if kind == "git":
                 raise

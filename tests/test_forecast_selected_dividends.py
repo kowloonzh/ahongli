@@ -5,6 +5,23 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def insurance_safety_fields():
+    return {
+        "insurance_quality_gate_passed": True,
+        "insurance_quality_gate_status": "passed",
+        "insurance_group_core_solvency_ratio": 165.6,
+        "insurance_group_comprehensive_solvency_ratio": 198.1,
+        "insurance_stressed_core_solvency_ratio": 160.9,
+        "insurance_stressed_comprehensive_solvency_ratio": 194.2,
+        "insurance_material_subsidiary_min_core_solvency_ratio": 133.8,
+        "insurance_material_subsidiary_min_comprehensive_solvency_ratio": 185.5,
+        "insurance_parent_available_funds_end": 1_000_000_000_000.0,
+        "insurance_parent_financing_proceeds": 0.0,
+        "insurance_parent_funds_bridge_reconciled": True,
+        "insurance_subsidiary_dividend_coverage": 1.14,
+    }
 SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
@@ -353,6 +370,7 @@ class ForecastSelectedDividendsTest(unittest.TestCase):
         top = [{
             "rank": 1, "ts_code": "601318.SH", "name": "中国平安",
             "industry": "保险", "selected": "是", "dividend_score_total": 82.62,
+            **insurance_safety_fields(),
         }]
         evidence = {
             "601318.SH": {
@@ -362,6 +380,9 @@ class ForecastSelectedDividendsTest(unittest.TestCase):
                     {"fact_type": "operating_profit_parent_prior_comparable", "period": "20250630", "value": 50.0},
                     {"fact_type": "total_shares", "period": "20251231", "value": 100.0},
                     {"fact_type": "official_payout_floor", "value": 0.30, "valid_from": 2026, "valid_to": 2028},
+                    {"fact_type": "historical_payout_ratio", "period": "20231231", "value": 0.28},
+                    {"fact_type": "historical_payout_ratio", "period": "20241231", "value": 0.30},
+                    {"fact_type": "historical_payout_ratio", "period": "20251231", "value": 0.32},
                 ],
                 "dividend_events": [],
             }
@@ -373,7 +394,7 @@ class ForecastSelectedDividendsTest(unittest.TestCase):
             run_date="20260902",
         )
 
-        self.assertEqual(result[0]["model_id"], "insurance_operating_profit_policy_v1")
+        self.assertEqual(result[0]["model_id"], "insurance_operating_profit_cash_capital_v3")
         self.assertEqual(result[0]["forecast_profit"], 120.0)
         self.assertAlmostEqual(result[0]["forecast_fy_regular_dps_base"], 0.36)
 
@@ -448,6 +469,7 @@ class ForecastSelectedDividendsTest(unittest.TestCase):
         top = [{
             "rank": 1, "ts_code": "601318.SH", "name": "中国平安",
             "industry": "保险", "selected": "是", "dividend_score_total": 82.62,
+            **insurance_safety_fields(),
         }]
         evidence = {
             "601318.SH": {
@@ -470,7 +492,7 @@ class ForecastSelectedDividendsTest(unittest.TestCase):
 
         self.assertEqual(result[0]["forecast_status"], "modelled")
         self.assertEqual(result[0]["forecast_method"], "historical_payout")
-        self.assertEqual(result[0]["model_id"], "insurance_operating_profit_historical_payout_v2")
+        self.assertEqual(result[0]["model_id"], "insurance_operating_profit_cash_capital_v3")
         self.assertEqual(result[0]["forecast_uncertainty"], "high")
 
     def test_insurance_uses_consensus_full_year_payouts_and_ignores_interim_footnote(self):
@@ -478,6 +500,7 @@ class ForecastSelectedDividendsTest(unittest.TestCase):
         top = [{
             "rank": 1, "ts_code": "601318.SH", "name": "中国平安",
             "industry": "保险", "selected": "是", "dividend_score_total": 82.62,
+            **insurance_safety_fields(),
         }]
         payout_facts = []
         for period, consensus, count in [
@@ -509,8 +532,8 @@ class ForecastSelectedDividendsTest(unittest.TestCase):
 
         self.assertAlmostEqual(result[0]["forecast_payout_ratio"], 0.373)
         self.assertAlmostEqual(result[0]["forecast_fy_regular_dps_base"], 2.9019718312583085)
-        self.assertEqual(result[0]["model_id"], "insurance_operating_profit_historical_payout_v2")
-        self.assertEqual(result[0]["model_version"], "2")
+        self.assertEqual(result[0]["model_id"], "insurance_operating_profit_cash_capital_v3")
+        self.assertEqual(result[0]["model_version"], "3")
         payout_decision = next(
             item for item in result[0]["forecast_selection_decisions"]
             if item["selector"] == "historical_payout_ratio" and item["period"] == "20231231"
@@ -556,6 +579,7 @@ class ForecastSelectedDividendsTest(unittest.TestCase):
         top = [{
             "rank": 1, "ts_code": "601318.SH", "name": "中国平安",
             "industry": "保险", "selected": "是", "dividend_score_total": 82.62,
+            **insurance_safety_fields(),
         }]
         facts = []
         for year, profit in [(2023, 100.0), (2024, 110.0), (2025, 120.0)]:

@@ -19,7 +19,7 @@ Financial API date-range inputs filter announcement dates. Query through `run_da
 
 Persist source query parameters, fetch timestamp, fields, row counts, failed segments, and deduplication decisions. The constituent cache must contain all mandatory company-profile fields for exactly 300 unique codes. Market-preflight failures do not require detailed financial-factor caches beyond common benchmark data.
 
-All mutable runtime data lives under a persistent `{data_root}` outside the installed skill: formal and forward results under `{data_root}/a_dividend_outputs/`, and downloaded/extracted bank reports under `{data_root}/_bank_report_cache/`. Resolve `{data_root}` from explicit CLI input, then `AHONGLI_DATA_ROOT`, then the project workspace. A packaged skill without `.git` uses a deterministic hash of runtime scripts and assets as its replay code identity; never create `.git` only to satisfy replay metadata.
+All mutable runtime data lives under a persistent `{data_root}` outside the installed skill: formal and forward results under `{data_root}/a_dividend_outputs/`, downloaded/extracted bank reports under `{data_root}/_bank_report_cache/`, and insurance reports under `{data_root}/_insurance_report_cache/`. Resolve `{data_root}` from explicit CLI input, then `AHONGLI_DATA_ROOT`, then the project workspace. A packaged skill without `.git` uses a deterministic hash of runtime scripts and assets as its replay code identity; never create `.git` only to satisfy replay metadata.
 
 ## Output states
 
@@ -50,6 +50,12 @@ Optional extensions include attention-loan, overdue-loan, real-estate NPL, and p
 
 When the cache is missing or incomplete, the runner prepares it automatically from original CNinfo annual reports available by `run_date`. Reuse the shared `_bank_report_cache` for PDFs and extracted text, but rebuild the run-date CSV and revalidate exact bank-code and three-year coverage before scoring.
 
+## Required insurance metrics cache
+
+`insurance_quality_metrics.csv` contains the latest three complete annual records plus the latest available periodic record for every market-preflight insurer. Every record carries `period`, `report_type`, `available_date`, group capital amounts and solvency ratios, material-subsidiary JSON, standalone stress JSON, risk rating when public and applicable, original source path/announcement ID, and `metric_evidence_json` with page, excerpt, definition, entity, extractor version and evidence ID.
+
+Annual records additionally carry group-parent beginning/ending available funds, subsidiary dividends received, external cash dividends paid, subsidiary investments, financing and other uses, the reconciled bridge residual, coverage ratios, parent-attributable operating profit and operating-profit payout ratio. These cash-period facts are separate from fiscal-year dividend events. Financing is retained as a source but excluded from recurring coverage and the forward cash cap. Future-dated documents, incomplete periods, conflicting entity/units or unparsable mandatory facts are `data_gap`.
+
 ## Independent Forward-Dividend Outputs
 
 The optional forward stage consumes only the already-written formal Top10 and writes independent `hs300-dividend-forward-*` outputs. It must preserve the formal Top10 SHA-256 and mtime for the whole transaction.
@@ -61,6 +67,8 @@ Every non-empty forecast must reference original source documents, page evidence
 The forward Top10 carries the issuer's formally evidenced A-share regular-dividend payment calendar: `next_dividend_date_status`, `next_dividend_event_id`, `next_dividend_record_date`, `next_dividend_ex_date`, `next_dividend_payment_date`, and `next_dividend_evidence_source_ids`. Select the earliest valid `payment_date >= run_date` from implementation events, ordered by payment date (not ex-date), then ex-date and event ID for deterministic ties. Include events already ex-dividend but not yet past their scheduled payment date; exclude special, H-share, non-CNY and known future-announced events. Set `payment_today` on the payment day; later payments are `scheduled`. Display only `YYYY-MM-DD` for both statuses, without claiming actual receipt. A current plan lacking implementation is `pending_implementation` / `待实施公告`, regardless of tentative dates. No qualifying schedule is `no_upcoming_payment` / `—`, not a claim that a historical payment was never announced. CSV keeps dates as `YYYYMMDD`; display labels belong only in Markdown/HTML/console. Never infer dates from historical cadence. This is separate from `forward_12m_eligible_dps`: that field still uses the quote date and excludes already ex-dividend events for a new buyer. A displayed issuer payment is not proof of an investor's entitlement.
 
 Persist `forecast_payout_ratio_low`, `forecast_payout_ratio`, and `forecast_payout_ratio_high` separately when payout assumptions vary by scenario. Complete-year payout facts exclude interim periods and historical footnotes assigned to another year. A `full_year` dividend event supersedes arithmetic addition of its component interim and final events for annual payout reconstruction.
+
+Insurance forward rows also persist `forecast_cash_cap_total`, `forecast_cash_cap_dps`, `forecast_insurance_constraints`, `announced_dividend_floor`, and assumptions explaining that standalone stresses were not combined and solvency percentages were not converted to distributable cash without amount evidence. Missing any mandatory safety or scenario fact yields empty DPS and `data_gap`.
 
 Also persist `forecast_profit_low`, `forecast_profit`, `forecast_profit_high`, `forecast_selection_decisions`, `target_yield_policy_id`, and `target_yield_policy_sha256`. Every normalized fact has an `evidence_span_id` resolving to a span with source document, page, raw excerpt, and extraction backend.
 

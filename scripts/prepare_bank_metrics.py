@@ -62,7 +62,7 @@ def select_latest_three_complete_annual_rows(
 
 
 def _default_cache_root(output_path: Path) -> Path:
-    resolved = output_path.resolve()
+    resolved = output_path.absolute()
     output_root = next(
         (parent for parent in resolved.parents if parent.name == "a_dividend_outputs"),
         None,
