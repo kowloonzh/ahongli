@@ -38,6 +38,10 @@ DEFAULT_PARAMS: dict[str, float | None] = {
     "record_block_weight": 0.5,
     "interest_coverage_min": 3.0,
     "cycle_gate_max_ratio": None,
+    # 1: the cycle gate applies to nonfinancial companies only. Bank profit is
+    # smoothed by provisioning, and a fast-growing bank's latest profit sits
+    # far above its 10-year median without any cycle peak.
+    "cycle_gate_nonfinancial_only": 0.0,
     "cycle_factor_weight": 0.0,
 }
 RECORD_FACTOR_WEIGHTS = {
@@ -239,9 +243,11 @@ def interest_coverage_gate(record: dict[str, Any], minimum: float) -> tuple[str,
     return "data_gap", "缺少最新年报EBIT利息覆盖倍数"
 
 
-def cycle_gate(record: dict[str, Any], max_ratio: float | None) -> tuple[str, str]:
+def cycle_gate(record: dict[str, Any], max_ratio: float | None, nonfinancial_only: bool = False) -> tuple[str, str]:
     if max_ratio is None:
         return "not_applied", ""
+    if nonfinancial_only and bool(record.get("is_financial")):
+        return "not_applicable", ""
     ratio = strategy.finite_float(record.get("profit_dedt_to_10y_median"))
     if ratio is None and record.get("profit_dedt_to_10y_median") == math.inf:
         ratio = math.inf
@@ -263,7 +269,9 @@ def apply_v2(
     """Add v2 factors and gates to one structured record (copy)."""
     updated = {**record, **v2_factor_fields(record, fina_indicator, income_interest)}
     coverage_status, coverage_reason = interest_coverage_gate(updated, float(params["interest_coverage_min"]))
-    cycle_status, cycle_reason = cycle_gate(updated, params["cycle_gate_max_ratio"])
+    cycle_status, cycle_reason = cycle_gate(
+        updated, params["cycle_gate_max_ratio"], bool(params["cycle_gate_nonfinancial_only"])
+    )
     updated["interest_coverage_gate_status"] = coverage_status
     updated["cycle_gate_status"] = cycle_status
     if not bool(updated.get("structured_gate_passed")):

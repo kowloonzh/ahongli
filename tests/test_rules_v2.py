@@ -125,6 +125,17 @@ class ApplyV2Test(unittest.TestCase):
         self.assertIn("2.5", cyclical["structured_gate_reason"])
         self.assertEqual(failed["structured_gate_reason"], "支付率")
 
+    def test_cycle_gate_can_skip_financials(self):
+        params = rules_v2.resolve_params({"cycle_gate_max_ratio": 2, "cycle_gate_nonfinancial_only": 1})
+        fina = annual_frame(2015, ebit_to_interest=10.0, netdebt=1.0)
+
+        bank = rules_v2.apply_v2(self.record(is_financial=True), fina, params)
+        industrial = rules_v2.apply_v2(self.record(), fina, params)
+
+        self.assertTrue(bank["structured_gate_passed"])
+        self.assertEqual(bank["cycle_gate_status"], "not_applicable")
+        self.assertFalse(industrial["structured_gate_passed"])
+
     def test_default_params_do_not_apply_cycle_gate(self):
         fina = annual_frame(2015, ebit_to_interest=10.0, netdebt=1.0)
 
