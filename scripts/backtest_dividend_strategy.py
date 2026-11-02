@@ -32,6 +32,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import random  # noqa: E402
+from contextlib import contextmanager  # noqa: E402
 
 import run_a_dividend_strategy as strategy  # noqa: E402
 import rules_v2  # noqa: E402
@@ -345,6 +346,18 @@ def load_prior_top_file(path: Path) -> dict[str, Any]:
     return {"run_date": match.group(1) if match else "", "source": str(path), "codes": codes}
 
 
+@contextmanager
+def profit_trend_threshold(value: float | None):
+    """Run the production profit-trend gate with another threshold."""
+    original = strategy.MIN_PROFIT_DEDT_THREE_YEAR_CHANGE
+    if value is not None:
+        strategy.MIN_PROFIT_DEDT_THREE_YEAR_CHANGE = float(value)
+    try:
+        yield
+    finally:
+        strategy.MIN_PROFIT_DEDT_THREE_YEAR_CHANGE = original
+
+
 def screen_period(
     period: str,
     store: RawStore,
@@ -402,7 +415,9 @@ def screen_period(
         except Exception as error:
             details[code] = error
 
-    records = strategy.build_structured_factor_records(period, constituents, profiles, common, details)
+    threshold = rules_v2.resolve_params(rule_params)["profit_dedt_min_change"] if rule_version == "v2" else None
+    with profit_trend_threshold(threshold):
+        records = strategy.build_structured_factor_records(period, constituents, profiles, common, details)
     structured = {str(record["ts_code"]): record for record in records}
     if bank_metrics_file is not None:
         bank_codes = {

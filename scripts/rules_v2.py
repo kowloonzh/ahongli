@@ -43,6 +43,8 @@ DEFAULT_PARAMS: dict[str, float | None] = {
     # far above its 10-year median without any cycle peak.
     "cycle_gate_nonfinancial_only": 0.0,
     "cycle_factor_weight": 0.0,
+    # Threshold of the v1 deducted-profit trend gate, for sensitivity runs.
+    "profit_dedt_min_change": -0.10,
 }
 RECORD_FACTOR_WEIGHTS = {
     "consecutive_dividend_years_capped": 1 / 3,

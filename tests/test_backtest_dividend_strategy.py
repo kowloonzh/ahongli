@@ -225,6 +225,19 @@ class BacktestDividendStrategyTest(unittest.TestCase):
         self.assertEqual(full["bank"], module.strategy.BANK_FACTOR_WEIGHTS)
         self.assertEqual(weights["nonfinancial"], module.strategy.NONFINANCIAL_FACTOR_WEIGHTS)
 
+    def test_profit_trend_threshold_is_restored(self):
+        module = load_module()
+        original = module.strategy.MIN_PROFIT_DEDT_THREE_YEAR_CHANGE
+        profits = {2012: 100.0, 2013: 95.0, 2014: 90.0, 2015: 87.0}
+
+        with module.profit_trend_threshold(-0.15):
+            loose = module.strategy.profit_trend_gate(profits)["passed"]
+        strict = module.strategy.profit_trend_gate(profits)["passed"]
+
+        self.assertTrue(loose)
+        self.assertFalse(strict)
+        self.assertEqual(module.strategy.MIN_PROFIT_DEDT_THREE_YEAR_CHANGE, original)
+
     def perturbation_rows(self, count=12, gap=10.0):
         rows = []
         for index in range(count):
