@@ -14,7 +14,7 @@ from typing import Any
 
 
 FORWARD_FIELDS = [
-    "rank", "ts_code", "name", "dividend_score_total", "quote_price", "quote_date",
+    "top10_rank", "rank", "ts_code", "name", "dividend_score_total", "quote_price", "quote_date",
     "instrument_ts_code", "share_class", "quote_currency", "dividend_currency",
     "forecast_share_denominator_scope", "fx_rate", "fx_rate_date", "fx_source", "source_dividend_yield",
     "source_dividend_yield_definition", "forecast_fiscal_year",
@@ -98,6 +98,16 @@ def format_next_dividend_payment(row: dict[str, Any]) -> str:
     return "—"
 
 
+def display_rank(row: dict[str, Any]) -> str:
+    """Position inside the formal Top10; Top10 files from before 2026-11-02 carry only ``rank``."""
+    return str(row.get("top10_rank") or row.get("rank") or "")
+
+
+def rank_sort_key(row: dict[str, Any]) -> int:
+    value = display_rank(row)
+    return int(value) if value.isdigit() else 10_000
+
+
 def _write_detail(
     row: dict[str, Any],
     detail_path: Path,
@@ -108,7 +118,7 @@ def _write_detail(
         "",
         "## 预测结论",
         "",
-        f"- 正式排名：{row.get('rank', '')}",
+        f"- 正式排名：Top10第{display_rank(row)}名（全量排名{row.get('rank', '')}）",
         f"- 正式综合得分：{_number(row.get('dividend_score_total'))}",
         f"- 预测状态：`{row.get('forecast_status', '')}`",
         f"- 预测方法：`{row.get('forecast_method', '')}`",
@@ -223,7 +233,7 @@ def render_forward_dividend_outputs(
     evidence_by_code: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Path]:
     output_dir = Path(output_dir)
-    ordered = sorted(rows, key=lambda row: int(row.get("rank") or 10_000))
+    ordered = sorted(rows, key=rank_sort_key)
     for row in ordered:
         detail = output_dir / "market_data" / "forward_dividend_evidence" / str(row["ts_code"]) / "forecast-detail.md"
         row["evidence_detail_path"] = str(detail.relative_to(output_dir))
@@ -252,7 +262,7 @@ def render_forward_dividend_outputs(
         )
         target_price = _display_range(row.get("target_price_low"), row.get("target_price_high"))
         md.append(
-            f"| {row.get('rank','')} | [{row.get('name','')}]({row.get('evidence_detail_path','')}) | "
+            f"| {display_rank(row)} | [{row.get('name','')}]({row.get('evidence_detail_path','')}) | "
             f"{_number(row.get('dividend_score_total'))} | {_number(row.get('quote_price'))} | "
             f"{_number(row.get('forecast_fy_regular_dps_base'), 4)} | {_percent(row.get('expected_dividend_yield'))} | "
             f"{format_next_dividend_payment(row)} | {row.get('target_display_label') or '暂不判断'} | "
@@ -265,7 +275,7 @@ def render_forward_dividend_outputs(
     for row in ordered:
         body.append(
             "<tr>"
-            f"<td>{html.escape(str(row.get('rank','')))}</td>"
+            f"<td>{html.escape(display_rank(row))}</td>"
             f"<td><a href='{html.escape(str(row.get('evidence_detail_path','')))}'>{html.escape(str(row.get('name','')))}</a><br><small>{html.escape(str(row.get('ts_code','')))}</small></td>"
             f"<td>{_number(row.get('dividend_score_total'))}</td>"
             f"<td>{_number(row.get('quote_price'))}</td>"

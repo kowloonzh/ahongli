@@ -41,6 +41,8 @@ DIVIDEND_YIELD_ENTRY_RATIO = 0.80
 DIVIDEND_YIELD_RETENTION_RATIO = 0.75
 MIN_PROFIT_DEDT_THREE_YEAR_CHANGE = -0.10
 MAX_TOP_CANDIDATES_PER_INDUSTRY = 5
+# Banks share one macro and rate cycle, so they get a tighter cap (2026-11-02).
+MAX_TOP_BANKS = 3
 RULE_VERSIONS = ("v1", "v2")
 # Formal default since 2026-11-02: rule v2 with the nonfinancial cross-cycle
 # gate (docs/scoring-v2-backtest-comparison.md). v1 stays selectable.
@@ -121,6 +123,7 @@ FACTOR_PERCENTILE_FIELDS = {
     "bank_cost_income_ratio": "bank_cost_income_ratio_percentile",
 }
 CSV_FIELDS = [
+    "top10_rank",
     "rank",
     "dividend_score_total",
     "score_reason",
@@ -1528,6 +1531,10 @@ def portfolio_scope_gate_profile(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def industry_cap(industry: str) -> int:
+    return MAX_TOP_BANKS if is_bank_industry(industry) else MAX_TOP_CANDIDATES_PER_INDUSTRY
+
+
 def _industry_capped_top(
     rows: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -1544,7 +1551,7 @@ def _industry_capped_top(
         if len(top) >= TOP_CANDIDATE_COUNT:
             break
         industry = str(row.get("industry") or "").strip()
-        if industry and counts.get(industry, 0) >= MAX_TOP_CANDIDATES_PER_INDUSTRY:
+        if industry and counts.get(industry, 0) >= industry_cap(industry):
             capped.append(row)
             continue
         if industry:
@@ -2505,8 +2512,8 @@ def build_candidate_rows(
         row["selected"] = "否"
         row["selection_status"] = "concentration_capped"
         row["selected_reason"] = (
-            f"行业上限：{row.get('industry', '')}已有{MAX_TOP_CANDIDATES_PER_INDUSTRY}家进入Top10，"
-            "保留得分与排名，由下一名顺延"
+            f"行业上限：{row.get('industry', '')}已有{industry_cap(str(row.get('industry', '')))}家进入Top10，"
+            "保留得分与全量排名，由下一名顺延"
         )
     rows.sort(
         key=lambda record: (
@@ -2520,6 +2527,11 @@ def build_candidate_rows(
     )
     for index, row in enumerate(rows, start=1):
         row["rank"] = index
+        row["top10_rank"] = ""
+    # Position inside the formal Top10 (1..10, no gaps left by capped companies);
+    # ``rank`` stays the full-universe rank for audit.
+    for position, row in enumerate(formal_top_candidates(rows), start=1):
+        row["top10_rank"] = position
     return rows
 
 
@@ -2649,13 +2661,13 @@ def write_markdown(
     if rule_version == "v2":
         lines.extend(
             [
-                "| 排名 | 公司 | 代码 | 总分 | 分红记录分 | 经营质量分 | 主营业务 | ROE | DROE | 三年FCF覆盖 | 连续分红年数 | 10年DPS削减次数 | 五年DPS CAGR | 扣非/10年中位数 |",
-                "|---:|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|",
+                "| 排名 | 全量排名 | 公司 | 代码 | 总分 | 分红记录分 | 经营质量分 | 主营业务 | ROE | DROE | 三年FCF覆盖 | 连续分红年数 | 10年DPS削减次数 | 五年DPS CAGR | 扣非/10年中位数 |",
+                "|---:|---:|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|",
             ]
         )
         for row in top:
             lines.append(
-                f"| {row.get('rank', '')} | {row.get('name', '')} | {row.get('ts_code', '')} | "
+                f"| {row.get('top10_rank', '')} | {row.get('rank', '')} | {row.get('name', '')} | {row.get('ts_code', '')} | "
                 f"{fmt_num(row.get('dividend_score_total'))} | {fmt_num(row.get('record_score'))} | {fmt_num(row.get('quality_score'))} | "
                 f"{str(row.get('main_business', ''))[:40]} | {fmt_num(row.get('roe'))} | {fmt_num(row.get('droe'))} | "
                 f"{fmt_num(row.get('fcf_dividend_coverage_3y'))} | {row.get('consecutive_dividend_years', '')} | "
@@ -2677,13 +2689,13 @@ def write_markdown(
         return
     lines.extend(
         [
-            "| 排名 | 公司 | 代码 | 总分 | 主营业务 | ROE | DROE | OPCFD | 三年FCF覆盖 | 股息率CV | 连续分红年数 | 五年DPS CAGR |",
-            "|---:|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|",
+            "| 排名 | 全量排名 | 公司 | 代码 | 总分 | 主营业务 | ROE | DROE | OPCFD | 三年FCF覆盖 | 股息率CV | 连续分红年数 | 五年DPS CAGR |",
+            "|---:|---:|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for row in top:
         lines.append(
-            f"| {row.get('rank', '')} | {row.get('name', '')} | {row.get('ts_code', '')} | "
+            f"| {row.get('top10_rank', '')} | {row.get('rank', '')} | {row.get('name', '')} | {row.get('ts_code', '')} | "
             f"{fmt_num(row.get('dividend_score_total'))} | {str(row.get('main_business', ''))[:40]} | "
             f"{fmt_num(row.get('roe'))} | {fmt_num(row.get('droe'))} | {fmt_num(row.get('opcfd'), 4)} | "
             f"{fmt_num(row.get('fcf_dividend_coverage_3y'))} | {fmt_num(row.get('dividend_yield_cv_5y'), 4)} | "

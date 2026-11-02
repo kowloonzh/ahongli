@@ -25,6 +25,18 @@ def load_module():
 
 
 class RunForwardDividendAnalysisTest(unittest.TestCase):
+    def test_console_ranks_by_top10_position_not_full_universe_rank(self):
+        module = load_module()
+        rows = [
+            {"top10_rank": 2, "rank": 13, "name": "顺延公司", "ts_code": "600002.SH"},
+            {"top10_rank": 1, "rank": 1, "name": "首位公司", "ts_code": "600001.SH"},
+        ]
+
+        lines = module.format_console_top10(rows, run_date="20261102").splitlines()[3:]
+
+        self.assertTrue(lines[0].startswith("1 | 首位公司"))
+        self.assertTrue(lines[1].startswith("2 | 顺延公司"))
+
     def test_console_summary_prints_readable_top10_fields_and_data_gap(self):
         module = load_module()
         rows = [

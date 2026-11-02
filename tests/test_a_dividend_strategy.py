@@ -1522,7 +1522,7 @@ class ADividendStrategyTest(unittest.TestCase):
 
         self.assertEqual([row["ts_code"] for row in top], ["C", "A"])
 
-    def test_top10_caps_one_industry_at_five_and_promotes_next_company(self):
+    def test_top10_caps_banks_at_three_other_industries_at_five(self):
         module = load_module()
         rows = [
             {"ts_code": f"B{index}", "industry": "银行", "selected": "是", "dividend_score_total": 100 - index}
@@ -1530,13 +1530,16 @@ class ADividendStrategyTest(unittest.TestCase):
         ] + [
             {"ts_code": f"P{index}", "industry": "电力", "selected": "是", "dividend_score_total": 50 - index}
             for index in range(6)
+        ] + [
+            {"ts_code": f"O{index}", "industry": "食品", "selected": "是", "dividend_score_total": 30 - index}
+            for index in range(3)
         ]
 
         top = module.formal_top_candidates(rows)
 
         self.assertEqual(
             [row["ts_code"] for row in top],
-            ["B0", "B1", "B2", "B3", "B4", "P0", "P1", "P2", "P3", "P4"],
+            ["B0", "B1", "B2", "P0", "P1", "P2", "P3", "P4", "O0", "O1"],
         )
 
     def test_candidate_rows_mark_industry_capped_rows_and_keep_score_rank(self):
@@ -1572,11 +1575,16 @@ class ADividendStrategyTest(unittest.TestCase):
         self.assertEqual(capped["selection_status"], "concentration_capped")
         self.assertEqual(capped["selected"], "否")
         self.assertIn("行业上限", capped["selected_reason"])
+        self.assertIn("银行已有3家", capped["selected_reason"])
         self.assertEqual(capped["rank"], 6)
+        self.assertEqual(capped["top10_rank"], "")
         self.assertEqual(by_code["600100.SH"]["rank"], 7)
+        # The promoted company takes the next Top10 position; rank stays full-universe.
+        self.assertEqual(by_code["600100.SH"]["top10_rank"], 4)
+        self.assertEqual(by_code["600002.SH"]["top10_rank"], 3)
         self.assertEqual(
             [row["ts_code"] for row in module.formal_top_candidates(rows)],
-            ["600000.SH", "600001.SH", "600002.SH", "600003.SH", "600004.SH", "600100.SH"],
+            ["600000.SH", "600001.SH", "600002.SH", "600100.SH"],
         )
 
     def test_structured_factor_record_calculates_all_nonfinancial_gates_and_scores(self):
