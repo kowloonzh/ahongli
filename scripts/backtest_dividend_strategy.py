@@ -358,6 +358,26 @@ def profit_trend_threshold(value: float | None):
         strategy.MIN_PROFIT_DEDT_THREE_YEAR_CHANGE = original
 
 
+def bank_profiles_as_of(path: Path, codes: set[str], period: str) -> dict[str, dict[str, Any]]:
+    """Bank report profiles from the reports public by ``period``.
+
+    A history file carries ``announcement_date``; without it, only fiscal
+    years ending before the rebalance year are used. Incomplete metrics give
+    a data-gap profile instead of an error, so one unparsed report does not
+    stop the backtest.
+    """
+    frame = read_cached_csv(Path(path)).fillna("")
+    if "announcement_date" in frame.columns:
+        frame = frame[frame["announcement_date"].astype(str).str.fullmatch(r"\d{8}") & frame["announcement_date"].astype(str).le(period)]
+    else:
+        frame = frame[frame["period"].astype(str).str[:8].le(f"{int(period[:4]) - 1}1231")]
+    profiles = {}
+    for code in sorted(codes):
+        records = frame[frame["ts_code"].astype(str).eq(code)].to_dict("records")
+        profiles[code] = {"ts_code": code, "is_bank": True, **strategy.bank_quality_profile(records)}
+    return profiles
+
+
 def screen_period(
     period: str,
     store: RawStore,
@@ -426,9 +446,11 @@ def screen_period(
             if bool(record.get("is_bank")) and bool(record.get("market_preflight_passed"))
         }
         if bank_codes:
-            bank_profiles = strategy.load_bank_quality_profiles(bank_metrics_file, bank_codes)
-            for code, bank_profile in bank_profiles.items():
+            for code, bank_profile in bank_profiles_as_of(bank_metrics_file, bank_codes, period).items():
+                common_passed = bool(structured[code].get("structured_gate_passed"))
                 structured[code] = strategy.merge_bank_quality_gate(structured[code], bank_profile)
+                if common_passed and bank_profile.get("bank_quality_data_quality") != "normal":
+                    structured[code]["structured_gate_status"] = "data_gap"
     scorer = None
     if rule_version == "v2":
         params = rules_v2.resolve_params(rule_params)

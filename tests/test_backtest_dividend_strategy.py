@@ -238,6 +238,30 @@ class BacktestDividendStrategyTest(unittest.TestCase):
         self.assertFalse(strict)
         self.assertEqual(module.strategy.MIN_PROFIT_DEDT_THREE_YEAR_CHANGE, original)
 
+    def test_bank_profiles_use_only_reports_announced_by_period(self):
+        module = load_module()
+        metrics = {
+            "npl_ratio": "1.2", "provision_coverage_ratio": "250", "loan_provision_ratio": "3.0",
+            "net_interest_margin": "2.0", "cost_income_ratio": "30", "core_tier1_capital_ratio": "10",
+            "tier1_capital_ratio": "11", "capital_adequacy_ratio": "14", "data_quality": "normal",
+        }
+        rows = [
+            {"ts_code": "601398.SH", "period": f"{year}1231", "announcement_date": f"{year + 1}0330", **metrics}
+            for year in range(2012, 2017)
+        ]
+        rows[-1]["npl_ratio"] = "2.5"  # FY2016, announced 20170330
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "history.csv"
+            pd.DataFrame(rows).to_csv(path, index=False)
+            before = module.bank_profiles_as_of(path, {"601398.SH", "601988.SH"}, "20161101")
+            after = module.bank_profiles_as_of(path, {"601398.SH"}, "20171101")
+
+        self.assertEqual(before["601398.SH"]["bank_metrics_latest_period"], "20151231")
+        self.assertTrue(before["601398.SH"]["bank_quality_gate_passed"])
+        self.assertEqual(before["601988.SH"]["bank_quality_data_quality"], "data_gap")
+        self.assertEqual(after["601398.SH"]["bank_metrics_latest_period"], "20161231")
+        self.assertFalse(after["601398.SH"]["bank_quality_gate_passed"])
+
     def perturbation_rows(self, count=12, gap=10.0):
         rows = []
         for index in range(count):

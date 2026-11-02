@@ -23,7 +23,9 @@ REQUIRED_METRICS = [
 ]
 
 METRIC_ALIASES = {
-    "npl_ratio": ["不良贷款率", "不良贷款比率"],
+    # H-share reports call the NPL ratio 減值貸款率 (impaired-loan ratio); for
+    # mainland banks it is the same figure.
+    "npl_ratio": ["不良贷款率", "不良贷款比率", "减值贷款率"],
     "provision_coverage_ratio": ["拨备覆盖率"],
     "loan_provision_ratio": ["贷款拨备率", "拨贷比", "拨备率"],
     "net_interest_margin": ["净息差", "净利息收益率"],
@@ -58,23 +60,36 @@ TRADITIONAL_TRANSLATION = str.maketrans(
         "營": "营",
         "餘": "余",
         "與": "与",
+        "減": "减",
     }
 )
 
 PERCENT_RE = re.compile(r"(?<![\d.])(-?\d+(?:\.\d+)?)\s*[%％]")
 DECIMAL_RE = re.compile(r"(?<![\d.])(-?\d+\.\d+)(?!\d)")
 LEADING_REGULATORY_MINIMUM_RE = re.compile(
-    r"^\s*[（(]?\s*[≥＞>≤＜<]\s*-?\d+(?:\.\d+)?\s*[%％]?\s*[）)]?"
+    r"^\s*(?:[（(]\s*\d{1,2}\s*[）)])?\s*[（(]?\s*[≥＞>≤＜<]\s*-?\d+(?:\.\d+)?\s*[%％]?\s*[）)]?"
+)
+# Narrative changes such as “拨备覆盖率比上年末提升1.68个百分点” or “降幅116.30%”
+# describe a movement, not the ratio itself.
+CHANGE_VALUE_RE = re.compile(
+    r"(?:提升|上升|下降|降低|提高|增加|减少|增长|增幅|降幅|下降了|上升了)[^\d%\n]{0,4}-?\d+(?:\.\d+)?\s*(?:%|个百分点|个基点|bp|BP)?"
+    r"|-?\d+(?:\.\d+)?\s*(?:个百分点|个基点)"
 )
 
 
+# Letter-spaced labels such as "不 良 贷 款 率" (common in H-share reports). Only a
+# single space is removed, so table columns separated by wider gaps stay apart.
+LETTER_SPACING = re.compile(r"(?<=[\u4e00-\u9fff]) (?=[\u4e00-\u9fff])")
+
+
 def normalize_text(value: str) -> str:
-    return (
+    text = (
         str(value or "")
         .translate(TRADITIONAL_TRANSLATION)
         .replace("％", "%")
         .replace("\u3000", " ")
     )
+    return LETTER_SPACING.sub("", text)
 
 
 def _capital_label_allowed(metric: str, line: str, alias: str) -> bool:
@@ -101,15 +116,35 @@ def _candidate_score(line: str, alias: str, percentages: list[str]) -> int:
         score += 80
     if "  " in line or "\t" in line:
         score += 10
+    if "，" in compact or "。" in compact:
+        # Sentence punctuation marks narrative (often about a subsidiary), not a table row.
+        score -= 30
     return score
 
 
+def _before_other_label(text: str, alias: str) -> str:
+    """Cut at the next label of a different metric so one metric cannot take another's number."""
+    own = next(aliases for aliases in METRIC_ALIASES.values() if alias in aliases)
+    cut = len(text)
+    for aliases in METRIC_ALIASES.values():
+        if aliases is own:
+            continue
+        for other in aliases:
+            position = text.find(other)
+            if position >= 0 and other not in alias:
+                cut = min(cut, position)
+    return text[:cut]
+
+
 def _numbers_after_alias(line: str, following: list[str], alias: str) -> list[str]:
-    tail = line.split(alias, 1)[1]
+    full_tail = line.split(alias, 1)[1]
+    tail = _before_other_label(full_tail, alias)
+    label_follows = len(tail) < len(full_tail)
     # Regulatory tables often place the applicable minimum before the actual
     # current-period value, e.g. “贷款拨备率 ≥1.8 2.44 2.45”.  The threshold is
     # evidence for a gate, not the bank's disclosed metric.
     tail = LEADING_REGULATORY_MINIMUM_RE.sub(" ", tail, count=1)
+    tail = CHANGE_VALUE_RE.sub(" ", tail)
     values = PERCENT_RE.findall(tail) or DECIMAL_RE.findall(tail)
     if values:
         return values
@@ -117,7 +152,11 @@ def _numbers_after_alias(line: str, following: list[str], alias: str) -> list[st
     # next line and places the values after it (for example 中国银行's
     # “成本收入比（境内 / 监管口径，%） 28.77”).  Keep the continuation window
     # bounded so narrative mentions cannot scan arbitrarily far for a number.
-    continuation = " ".join(part.strip() for part in following if part.strip())
+    if label_follows:
+        # Another metric's label follows on the same line: the values below belong to it.
+        return []
+    continuation = CHANGE_VALUE_RE.sub(" ", " ".join(part.strip() for part in following if part.strip()))
+    continuation = _before_other_label(continuation, alias)
     return PERCENT_RE.findall(continuation) or DECIMAL_RE.findall(continuation)
 
 

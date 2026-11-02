@@ -250,6 +250,54 @@ class BankMetricsParserTest(unittest.TestCase):
         self.assertEqual(result["capital_adequacy_ratio"], 16.30)
         self.assertEqual(result["data_quality"], "normal")
 
+    def test_hshare_impaired_loan_ratio_is_the_npl_ratio(self):
+        module = load_module()
+
+        result = module.parse_bank_metrics("減值貸款率 1.36% 1.40%")
+
+        self.assertEqual(result["npl_ratio"], 1.36)
+
+    def test_letter_spaced_label_beats_later_loan_mix_table(self):
+        module = load_module()
+        text = """
+ 不 良 貸 款 率(7)                1.50         1.13
+不良貸款率 不良貸款率 項目 貸款 佔比（%） 不良貸款 （%）
+公司類貸款 7,869,552 65.9 135,256 1.72
+"""
+
+        self.assertEqual(module.parse_bank_metrics(text)["npl_ratio"], 1.50)
+
+    def test_regulatory_minimum_after_footnote_marker_is_skipped(self):
+        module = load_module()
+
+        result = module.parse_bank_metrics("拨备覆盖率(2) ≥140% 157.98% ≥150% 169.44%")
+
+        self.assertEqual(result["provision_coverage_ratio"], 157.98)
+
+    def test_narrative_changes_are_not_metric_values(self):
+        module = load_module()
+        text = """
+拨备覆盖率比上年末提升 1.68 个百分点，集团风险抵补能力进一步提升。
+金融资产减值损失较上年减少17.41亿元，平均拨备率增加；降幅 116.30%。
+"""
+
+        result = module.parse_bank_metrics(text)
+
+        self.assertIsNone(result["provision_coverage_ratio"])
+        self.assertIsNone(result["loan_provision_ratio"])
+
+    def test_label_listed_before_another_metric_does_not_take_its_value(self):
+        module = load_module()
+        text = """
+拨备余额、拨贷比、拨备覆盖率等财务指标居可比同业首位。
+实现净利润 1,840.60 亿元，比上年增长 1.8%。成本收入比 34.59%。
+"""
+
+        result = module.parse_bank_metrics(text)
+
+        self.assertIsNone(result["loan_provision_ratio"])
+        self.assertEqual(result["cost_income_ratio"], 34.59)
+
     def test_total_capital_ratio_does_not_reuse_tier1_values(self):
         module = load_module()
         text = """
