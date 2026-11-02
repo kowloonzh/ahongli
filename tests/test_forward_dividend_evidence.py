@@ -699,6 +699,34 @@ class ForwardDividendEvidenceTest(unittest.TestCase):
 
         self.assertEqual(result["total_shares"]["value"], 25_219_845_601)
 
+    def test_rounded_yi_share_disclosure_is_skipped_for_exact_count(self):
+        module = load_script("parse_forward_dividend_evidence")
+        text = (
+            "以本行普通股总股本 38.14 亿股为基数计算，合计分配现金股利 34.203 亿元。"
+            "普通股总股本 38\n\n截至报告期末，股份总数 3,813,949,587 股。"
+        )
+
+        result = module.parse_financial_facts(
+            text,
+            source={"announcement_id": "CDB-2023", "page": 2},
+            ts_code="601838.SH",
+            period="20231231",
+        )
+
+        self.assertEqual(result["total_shares"]["value"], 3_813_949_587)
+
+    def test_rounded_only_share_disclosure_yields_no_share_fact(self):
+        module = load_script("parse_forward_dividend_evidence")
+
+        result = module.parse_financial_facts(
+            "以本行普通股总股本 42.38 亿股为基数。",
+            source={"announcement_id": "CDB-2025", "page": 1},
+            ts_code="601838.SH",
+            period="20251231",
+        )
+
+        self.assertNotIn("total_shares", result)
+
     def test_real_dividend_base_share_format_is_parsed(self):
         module = load_script("parse_forward_dividend_evidence")
         text = "本行拟以356,406,257,089股普通股为基数向普通股股东派发现金股息。"

@@ -558,14 +558,15 @@ class ForecastSelectedDividendsTest(unittest.TestCase):
             "industry": "保险", "selected": "是", "dividend_score_total": 82.62,
         }]
         facts = []
+        scale = 1e10
         for year, profit in [(2023, 100.0), (2024, 110.0), (2025, 120.0)]:
             facts.extend([
-                {"fact_type": "operating_profit_parent", "period": f"{year}1231", "value": profit},
-                {"fact_type": "total_shares", "period": f"{year}1231", "value": 100.0},
+                {"fact_type": "operating_profit_parent", "period": f"{year}1231", "value": profit * scale},
+                {"fact_type": "total_shares", "period": f"{year}1231", "value": 100.0 * scale},
             ])
         facts.extend([
-            {"fact_type": "operating_profit_parent", "period": "20260630", "value": 60.0},
-            {"fact_type": "operating_profit_parent_prior_comparable", "period": "20250630", "value": 50.0},
+            {"fact_type": "operating_profit_parent", "period": "20260630", "value": 60.0 * scale},
+            {"fact_type": "operating_profit_parent_prior_comparable", "period": "20250630", "value": 50.0 * scale},
         ])
         evidence = {
             "601318.SH": {
@@ -587,6 +588,29 @@ class ForecastSelectedDividendsTest(unittest.TestCase):
         self.assertEqual(result[0]["forecast_status"], "modelled")
         self.assertAlmostEqual(result[0]["forecast_payout_ratio"], 0.30)
         self.assertEqual(result[0]["forecast_method"], "historical_payout")
+
+    def test_derived_payout_ignores_misparsed_tiny_share_counts(self):
+        # 成都银行: "普通股总股本 38.14 亿股" was once parsed as 38 shares and won the
+        # per-period mode, giving a 2.9e-9 payout ratio and a zero DPS forecast.
+        module = load_module()
+        facts = [
+            {"fact_type": "net_profit_parent", "period": "20231231", "value": 11_671_000_000.0},
+            {"fact_type": "total_shares", "period": "20231231", "value": 38},
+            {"fact_type": "total_shares", "period": "20231231", "value": 38},
+            {"fact_type": "total_shares", "period": "20231231", "value": 3_813_949_587},
+        ]
+        evidence = {
+            "normalized_facts": [facts[0], facts[3]],
+            "dividend_events": [{
+                "fiscal_period": "20231231", "regular_or_special": "regular",
+                "status": "implementation", "cash_dividend_per_share_pre_tax": 0.8968,
+            }],
+        }
+        clean = module._derived_payout_ratios(evidence, profit_fact_type="net_profit_parent")
+        self.assertAlmostEqual(clean["20231231"], 0.8968 * 3_813_949_587 / 11_671_000_000.0)
+
+        evidence["normalized_facts"] = facts[:3]
+        self.assertEqual(module._derived_payout_ratios(evidence, profit_fact_type="net_profit_parent"), {})
 
 
 if __name__ == "__main__":

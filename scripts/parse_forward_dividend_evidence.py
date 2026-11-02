@@ -24,6 +24,23 @@ def split_extracted_pages(text: str) -> list[dict[str, Any]]:
     ]
 
 
+MIN_EXACT_SHARE_COUNT = 1_000_000
+
+
+def _exact_share_match(prefix: str, text: str, *, suffix: str = r"\s*股?") -> re.Match[str] | None:
+    """Return the first exact integer share count after ``prefix``.
+
+    Rounded disclosures such as "总股本 38.14 亿股" must not be read as 38
+    shares: skip numbers with decimals or 亿/万 units and implausibly small
+    counts, then keep scanning for an exact figure in the same text.
+    """
+    pattern = prefix + r"([0-9][0-9,]*)(?![0-9,])(?!\.[0-9])(?!\s*[亿万])" + suffix
+    for match in re.finditer(pattern, text):
+        if int(match.group(1).replace(",", "")) >= MIN_EXACT_SHARE_COUNT:
+            return match
+    return None
+
+
 def _compact_chinese_date(text: str, label: str) -> str | None:
     match = re.search(
         rf"{label}\s*[:：]?\s*(20\d{{2}})\s*年\s*(\d{{1,2}})\s*月\s*(\d{{1,2}})\s*日",
@@ -80,7 +97,7 @@ def parse_dividend_event(
         per_share = re.search(per_share_pattern, compact)
     if not per_ten and not per_share:
         raise ValueError("cash dividend per share not found")
-    base_match = re.search(r"(?:总股本|股本)[^0-9]{0,12}([0-9][0-9,]*)\s*股", text)
+    base_match = _exact_share_match(r"(?:总股本|股本)[^0-9]{0,12}", text, suffix=r"\s*股")
     dps = float(per_ten.group(1)) / 10.0 if per_ten else float(per_share.group(1))
     base_shares = int(base_match.group(1).replace(",", "")) if base_match else None
     regular_or_special = "special" if "特别" in text else "regular"
@@ -329,12 +346,12 @@ def parse_financial_facts(
             "归属于公司股东的净利润",
         ],
     )
-    shares = re.search(
-        r"(?:期末总股本|普通股总股本|总股本|股份总数)\s*(?:[（(]股[）)]\s*)?([0-9][0-9,]*)\s*股?",
+    shares = _exact_share_match(
+        r"(?:期末总股本|普通股总股本|总股本|股份总数)\s*(?:[（(]股[）)]\s*)?",
         text,
     )
     if shares is None:
-        shares = re.search(r"([0-9][0-9,]*)\s*股?普通股为基数", text)
+        shares = _exact_share_match(r"", text, suffix=r"\s*股?普通股为基数")
     operating_profit = _extract_metric_series(
         text,
         ["归属于母公司股东的营运利润", "归属于上市公司股东的营运利润"],

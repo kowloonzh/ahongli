@@ -16,6 +16,10 @@ from forward_dividend_models import (
 )
 
 
+# Fewer shares than this means a rounded "xx.xx 亿股" disclosure was misparsed.
+MIN_PLAUSIBLE_SHARE_COUNT = 1_000_000
+
+
 def _truthy(value: Any) -> bool:
     return str(value).strip().lower() in {"true", "1", "是", "yes"}
 
@@ -148,7 +152,7 @@ def _derived_payout_ratios(
     for period, events in events_by_period.items():
         profit = _latest([fact for fact in profits if str(fact.get("period")) == period])
         share = _latest([fact for fact in shares if str(fact.get("period")) == period])
-        if not profit or not share or float(profit["value"]) <= 0 or float(share["value"]) <= 0:
+        if not profit or not share or float(profit["value"]) <= 0 or float(share["value"]) < MIN_PLAUSIBLE_SHARE_COUNT:
             continue
         full_year = [event for event in events if event.get("distribution_phase") == "full_year"]
         if full_year:
