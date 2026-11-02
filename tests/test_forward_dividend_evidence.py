@@ -665,6 +665,43 @@ class ForwardDividendEvidenceTest(unittest.TestCase):
         self.assertEqual(result["net_profit_parent"]["value"], 19_588_000_000.0)
         self.assertNotIn("net_profit_parent_prior_comparable", result)
 
+    def test_profit_table_header_years_are_not_parsed_as_values(self):
+        module = load_script("parse_forward_dividend_evidence")
+        text = (
+            "单位：人民币千元\n"
+            "归属于母公司股东的净利润                        归属于母公司股东权益\n"
+            "2025 年           2024 年                          2025 年度           2024 年度\n"
+            "12 月 31 日        12 月 31 日\n"
+            "按中国企业会计准则\n"
+            "归属于母公司股东的净利润 43,945,411 38,537,237\n"
+        )
+
+        result = module.parse_financial_facts(
+            text,
+            source={"announcement_id": "MIDEA-FY", "source_file": "fy.pdf", "page": 10},
+            ts_code="000333.SZ",
+            period="20251231",
+        )
+
+        self.assertEqual(result["net_profit_parent"]["value"], 43_945_411_000.0)
+        self.assertEqual(result["net_profit_parent_prior_comparable"]["value"], 38_537_237_000.0)
+
+    def test_profit_cited_as_payout_denominator_and_list_markers_are_not_values(self):
+        module = load_script("parse_forward_dividend_evidence")
+        text = (
+            "归属于上市公司股东的净利润的 26.4%。   3、2025 年度现金分红和股份回购总额   "
+            "2025 年度，公司现金分红和股份回购总额合计为 43,965,949,849 元，占 2025"
+        )
+
+        result = module.parse_financial_facts(
+            text,
+            source={"announcement_id": "MIDEA-PLAN", "source_file": "plan.pdf", "page": 3},
+            ts_code="000333.SZ",
+            period="20251231",
+        )
+
+        self.assertNotIn("net_profit_parent", result)
+
     def test_insurance_operating_profit_is_a_separate_fact(self):
         module = load_script("parse_forward_dividend_evidence")
         text = "归属于母公司股东的营运利润（元） 120,000,000,000.00 110,000,000,000.00"

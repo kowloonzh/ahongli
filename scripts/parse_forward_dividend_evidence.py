@@ -315,8 +315,17 @@ def _extract_metric_series(text: str, labels: list[str]) -> tuple[list[float], s
             continue
         combined = " ".join(lines[index : index + 3])
         segment = combined.split(label, 1)[1]
-        value_segment = re.split(r"同比|较上年|增长|下降", segment, maxsplit=1)[0]
+        if segment.lstrip().startswith("的"):
+            # Prose such as "占归属于上市公司股东的净利润的26.4%" cites the
+            # metric as a denominator; it carries no metric value.
+            continue
+        value_segment = re.split(r"同比|较上年|增长|下降|。", segment, maxsplit=1)[0]
         value_segment = re.sub(r"[+-]?[0-9][0-9,]*(?:\.[0-9]+)?\s*%", "", value_segment)
+        # Column headers and list markers are not values: "2025 年", "2025年度",
+        # "12 月 31 日", "3、".
+        value_segment = re.sub(r"[0-9]{4}\s*年(?:度)?", " ", value_segment)
+        value_segment = re.sub(r"[0-9]{1,2}\s*月\s*[0-9]{1,2}\s*日", " ", value_segment)
+        value_segment = re.sub(r"(?<![0-9,.])[0-9]{1,2}\s*[、．]", " ", value_segment)
         numbers = re.findall(r"[+-]?[0-9][0-9,]*(?:\.[0-9]+)?", value_segment)
         if any(token in value_segment for token in ["分配股息", "派发股息", "现金分红", "合计"]):
             numbers = numbers[:1]
