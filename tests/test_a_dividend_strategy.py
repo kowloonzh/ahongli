@@ -1716,9 +1716,12 @@ class ADividendStrategyTest(unittest.TestCase):
         )
 
         self.assertEqual(light.calls, ["income", "balancesheet"])
+        # fina_indicator reaches back PROFIT_HISTORY_YEARS in four-year windows
+        # (2014–2017, 2018–2021, 2022–2025, 2026); the last income call fetches
+        # EBIT and interest expense for the v2 debt-service gate.
         self.assertEqual(
             full.calls,
-            ["income", "balancesheet", "dividend", "fina_indicator", "cashflow", "fina_audit"],
+            ["income", "balancesheet", "dividend"] + ["fina_indicator"] * 4 + ["cashflow", "fina_audit", "income"],
         )
 
     def test_structured_factor_cache_must_cover_the_full_constituent_snapshot(self):
@@ -1742,8 +1745,12 @@ class ADividendStrategyTest(unittest.TestCase):
                 "20260820",
                 market,
                 skip_fetch=True,
+                rule_version="v1",
             )
             self.assertEqual(set(cached), {"600001.SH", "600002.SH"})
+            # A cache without v2 factors cannot serve a v2 run.
+            with self.assertRaises(RuntimeError):
+                module.ensure_structured_factor_data("20260820", market, skip_fetch=True, rule_version="v2")
 
             pd.DataFrame(
                 [{"ts_code": "600001.SH", "structured_gate_passed": True}]
@@ -1793,7 +1800,7 @@ class ADividendStrategyTest(unittest.TestCase):
                 }
             }
 
-            def fake_write_csv(content, path):
+            def fake_write_csv(content, path, **kwargs):
                 observed["csv"].append((path.name, [row["ts_code"] for row in content]))
 
             def fake_write_markdown(*args, **kwargs):
@@ -1929,6 +1936,92 @@ class ADividendStrategyTest(unittest.TestCase):
         self.assertIn("连续分红年数", combined)
         for obsolete in ["分红融资比", "兑现度", "当前价5", "Top5", "公司质量", "财报"]:
             self.assertNotIn(obsolete, combined)
+
+
+class FormalRuleV2Test(unittest.TestCase):
+    def cyclical_record(self):
+        return {
+            "ts_code": "600001.SH",
+            "name": "甲",
+            "industry": "煤炭开采",
+            "is_financial": False,
+            "is_bank": False,
+            "market_preflight_passed": True,
+            "dividend_anchor_year": 2025,
+            "consecutive_dividend_years": 12,
+            "annual_comparable_dps_json": json.dumps({str(year): 1.0 for year in range(2014, 2026)}),
+            "annual_profit_dedt_json": json.dumps({str(year): 10.0 for year in range(2016, 2025)} | {"2025": 25.0}),
+            "structured_gate_passed": True,
+            "structured_gate_status": "passed",
+            "structured_gate_reason": "通过",
+        }
+
+    def fina(self):
+        return pd.DataFrame([{"ts_code": "600001.SH", "end_date": "20251231", "ebit_to_interest": 9.0, "netdebt": 1.0}])
+
+    def test_default_rule_is_v2_with_nonfinancial_cycle_gate(self):
+        module = load_module()
+
+        self.assertEqual(module.DEFAULT_RULE_VERSION, "v2")
+        self.assertEqual(module.build_argument_parser().parse_args([]).rule_version, "v2")
+        params = module.formal_rule_params("v2")
+        self.assertEqual(params["cycle_gate_max_ratio"], 2.0)
+        self.assertEqual(params["cycle_gate_nonfinancial_only"], 1.0)
+        self.assertEqual(module.formal_rule_params("v1"), {})
+
+    def test_apply_rule_version_excludes_cycle_peak_and_tags_records(self):
+        module = load_module()
+        details = {"600001.SH": {"fina_indicator": self.fina(), "income_interest": pd.DataFrame()}}
+
+        v2 = module.apply_rule_version([self.cyclical_record()], details, "v2", module.formal_rule_params("v2"))[0]
+        v1 = module.apply_rule_version([self.cyclical_record()], details, "v1", {})[0]
+
+        self.assertFalse(v2["structured_gate_passed"])
+        self.assertEqual(v2["cycle_gate_status"], "hard_gate_failed")
+        self.assertEqual(v2["rule_version"], "v2")
+        self.assertTrue(v1["structured_gate_passed"])
+        self.assertEqual(v1["rule_version"], "v1")
+
+    def test_skip_fetch_accepts_cache_built_with_same_v2_params(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            market = Path(tmp)
+            pd.DataFrame([{"ts_code": "600001.SH", "name": "甲", "industry": "电力"}]).to_csv(market / "constituents.csv", index=False)
+            params_json = json.dumps(module.formal_rule_params("v2"), sort_keys=True)
+            pd.DataFrame(
+                [{"ts_code": "600001.SH", "structured_gate_passed": True, "rule_version": "v2", "rule_params_json": params_json}]
+            ).to_csv(market / module.STRUCTURED_FACTORS_FILENAME, index=False)
+
+            cached = module.ensure_structured_factor_data("20260820", market, skip_fetch=True)
+
+        self.assertEqual(set(cached), {"600001.SH"})
+
+    def test_v2_report_lists_gate_exclusions_and_v2_columns(self):
+        module = load_module()
+        top = {
+            "rank": 1, "ts_code": "600002.SH", "name": "乙公司", "industry": "电力", "selected": "是",
+            "market_preflight_passed": True, "structured_gate_passed": True, "dividend_score_total": 80,
+            "record_score": 70, "quality_score": 90, "dps_cut_count_10y": 0, "profit_dedt_to_10y_median": 1.1,
+        }
+        excluded = {
+            "ts_code": "600001.SH", "name": "甲公司", "industry": "煤炭开采", "selected": "否",
+            "market_preflight_passed": True, "structured_gate_passed": False,
+            "structured_gate_reason": "最新扣非利润为10年中位数的2.50倍，超过2倍（疑似周期高点）",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            markdown = Path(tmp) / "report.md"
+            html = Path(tmp) / "report.html"
+            module.write_markdown([top, excluded], "20261102", markdown, rule_version="v2")
+            module.write_html([top, excluded], "20261102", html, rule_version="v2")
+            report = markdown.read_text(encoding="utf-8")
+            dashboard = html.read_text(encoding="utf-8")
+
+        self.assertIn("评分规则：v2", report)
+        self.assertIn("10年DPS削减次数", report)
+        self.assertIn("| 甲公司 | 600001.SH | 煤炭开采 | 最新扣非利润为10年中位数的2.50倍", report)
+        self.assertNotIn("OPCFD", report)
+        self.assertIn("分红记录分", dashboard)
+        self.assertNotIn("OPCFD", dashboard)
 
 
 if __name__ == "__main__":

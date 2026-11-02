@@ -2,7 +2,7 @@
 
 ## 1. 提案状态
 
-- 状态：已确认（2026-11-02），第 8 节七项决策全部接受；按第 7 节分阶段实施。第 1–3 阶段已完成：v2 在回测中实现（`scripts/rules_v2.py`），对比见 `docs/scoring-v2-backtest-comparison.md`
+- 状态：已确认（2026-11-02），第 8 节决策全部接受；第 1–5 阶段已完成。v2 在回测中实现（`scripts/rules_v2.py`），对比见 `docs/scoring-v2-backtest-comparison.md`；2026-11-02 起正式筛选默认采用 v2 + 周期门槛（仅非金融，2 倍，`rules_v2.FORMAL_RULE_PARAMS`），`--rule-version v1` 保留旧规则
 - 目标 Skill：`ahongli`
 - 日期：2026-11-02
 - 依据：20261101 正式运行（commit `d39b660`）的候选表，以及本文第 4 节的两组试算

@@ -40,7 +40,7 @@ Hard market preflight:
 - `dv_ttm >= 3%` on at least 80% of determined days (entry line). The 3% is an absolute strategy choice and does not float with interest rates.
 - Hysteresis: a member of the previous formal Top10 is retained down to 75%. The previous Top10 is the latest `hs300-dividend-top10-YYYYMMDD.csv` under `{data_root}/a_dividend_outputs/YYYYMMDD/` dated strictly before `run_date`; record `prior_formal_top10_member`, `prior_formal_top10_source`, and `dividend_yield_required_ratio` per row. With no earlier formal Top10, every company uses the 80% entry line.
 
-Current price, current dividend yield, and the pass ratio may be displayed but never scored. Five-year yield CV is calculated here and scored later.
+Current price, current dividend yield, and the pass ratio may be displayed but never scored. Five-year yield CV is calculated here; only rule v1 scores it.
 
 ### 3. Structured financial gates and scoring
 
@@ -69,6 +69,8 @@ Hard gates do not contribute points:
 - nonfinancial companies: latest CFO/dividend at least 1 and three-year median at least 1;
 - latest audited annual opinion is standard unqualified;
 - no direct property-development, property-sales, or commercial-property-operation main business.
+- rule v2 (default), nonfinancial companies only: latest annual EBIT / interest expense at least 3 (net debt at or below zero passes outright; a blank Tushare `ebit_to_interest` falls back to income-statement EBIT / interest expense; missing both is `data_gap`);
+- rule v2 (default), nonfinancial companies only: latest annual `profit_dedt` at most twice its 10-year median (cross-cycle gate against cyclical profit peaks; fewer than eight annual observations is not judged);
 - banks additionally require three complete audited annual observations for all eight bank metrics, latest NPL ratio at most 2%, provision coverage at least 150%, actual loan provision ratio at least 1.5%, core Tier-1 capital at least 7.5%, Tier-1 capital at least 8.5%, and total capital adequacy at least 10.5%.
 
 There is no company-quality category gate.
@@ -80,42 +82,29 @@ Fill the formal Top10 by total score descending, but admit at most five companie
 
 ## Scoring
 
-Use market-preflight passers as the scoring reference pool. Do not winsorize. Before ranking, round factors to their disclosure precision so sub-precision gaps tie: ROE and DROE 0.1pp, bank NPL change and NIM change 0.05pp, DPS growth 1pp. Rank with average ties. Bank-specific and bank common-factor percentiles use the bank pool; nonfinancial percentiles use the nonfinancial pool. Other-financial companies retain their own weight model but benchmark common factors against all financial passers, preventing a one-company insurance cohort from mechanically scoring 100. Reverse five-year yield CV, bank NPL level/change, and bank cost-income ratio. Do not redistribute missing weights per company.
+The formal screen runs rule v2 by default (`--rule-version v2`, adopted 2026-11-02 after the 2016–2025 backtest in `docs/scoring-v2-backtest-comparison.md`; definitions in `docs/scoring-v2-proposal.md` and `scripts/rules_v2.py`). `--rule-version v1` reproduces the earlier rule. Every output records its rule version, and a structured-factor cache built under one rule version is never reused for another.
 
-Nonfinancial weights:
+Use market-preflight passers as the reference pool for the quality block. Do not winsorize. Before ranking, round factors to their disclosure precision so sub-precision gaps tie: ROE and DROE 0.1pp, bank NPL change and NIM change 0.05pp, DPS growth 1pp. Rank with average ties. Bank-specific and bank common-factor percentiles use the bank pool; nonfinancial percentiles use the nonfinancial pool. Other-financial companies benchmark common factors against all financial passers, preventing a one-company insurance cohort from mechanically scoring 100. Reverse bank NPL level/change and bank cost-income ratio. Do not redistribute missing weights per company.
 
-- latest TTM ROE 20%;
-- DROE 10%;
-- OPCFD 15%;
-- three-year cumulative FCF/dividend coverage 20%;
-- five-year yield CV 10%;
-- actual consecutive dividend years 10%;
-- five-year comparable DPS CAGR 15%.
+Rule v2 total = 50% dividend record + 50% operating quality.
 
-Financial weights:
+Dividend record, ranked across all structured-gate passers regardless of group (each 1/3):
 
-- latest TTM ROE 30%;
-- DROE 15%;
-- five-year yield CV 20%;
-- actual consecutive dividend years 20%;
-- five-year comparable DPS CAGR 15%.
+- consecutive dividend years, capped at 15;
+- comparable-DPS cuts in the last 10 fiscal years (a year below 95% of the prior year, or no dividend; fewer is better);
+- five-year comparable DPS CAGR.
 
-Bank weights:
+Operating quality, ranked within group:
 
-- latest TTM ROE 15%;
-- DROE 5%;
-- NPL quality 15% (`80% × latest NPL reverse percentile + 20% × three-year NPL change reverse percentile`);
-- provision quality 10% (provision-coverage percentile only); actual loan provision ratio is a separate hard gate and is not scored;
-- capital resilience 10% (`60% × core Tier-1 percentile + 40% × total capital adequacy percentile`);
-- NIM quality 10% (`70% × latest NIM percentile + 30% × three-year NIM change percentile`);
-- cost-income ratio 5% (lower is better);
-- five-year yield CV 10%;
-- actual consecutive dividend years 10%;
-- five-year comparable DPS CAGR 10%.
+- nonfinancial: latest TTM ROE 40%, DROE 20%, three-year cumulative FCF/dividend coverage 40%;
+- bank: latest TTM ROE 20%, DROE 10%, NPL quality 20% (`80% × latest NPL reverse percentile + 20% × three-year NPL change reverse percentile`), provision quality 15% (provision-coverage percentile; the actual loan provision ratio is a hard gate, not scored), capital resilience 15% (`60% × core Tier-1 percentile + 40% × total capital adequacy percentile`), NIM quality 10% (`70% × latest NIM percentile + 30% × three-year NIM change percentile`), cost-income ratio 10% (lower is better);
+- other financial: latest TTM ROE 65%, DROE 35%.
 
-DROE is scored as standardized DROE (DROE / the company's own twelve-quarter TTM ROE standard deviation) in every group; OPCFD is TTM CFO / interest-bearing debt, and a company with zero interest-bearing debt takes the top of the reference pool (bottom if its TTM CFO is not positive). DPS growth is the log-linear regression growth rate over five fiscal comparable DPS values.
+DROE is scored as standardized DROE (DROE / the company's own twelve-quarter TTM ROE standard deviation) in every group. DPS growth is the log-linear regression growth rate over five fiscal comparable DPS values. Consecutive years measure the A-share comparable record only, so A+H companies that returned to A shares recently are systematically understated; this is a known, accepted limitation. Financial companies have no FCF coverage factor; their weight model already totals 100%.
 
-Do not cap consecutive dividend years at ten. Consecutive years measure the A-share comparable record only, so A+H companies that returned to A shares recently are systematically understated; this is a known, accepted limitation. Financial companies do not receive zero for OPCFD or FCF coverage; those factors are not applicable and their separate model already totals 100%.
+The report lists every company whose only failed hard gate was a v2 gate (debt service or cross-cycle), with the reason.
+
+Rule v1 (legacy, `--rule-version v1`) has no v2 gates and scores each group on its own pool: nonfinancial ROE 20%, DROE 10%, OPCFD 15% (TTM CFO / interest-bearing debt; zero debt takes the top unless CFO is not positive), FCF coverage 20%, five-year yield CV 10% (reversed), uncapped consecutive dividend years 10%, DPS CAGR 15%; other financial ROE 30%, DROE 15%, yield CV 20%, consecutive years 20%, DPS CAGR 15%; bank ROE 15%, DROE 5%, NPL quality 15%, provision quality 10%, capital resilience 10%, NIM quality 10%, cost-income 5%, yield CV 10%, consecutive years 10%, DPS CAGR 10%.
 
 ## Company Profile Reuse
 
@@ -197,11 +186,11 @@ python3 scripts/backtest_dividend_strategy.py --asof YYYYMMDD --data-root ./data
 - Membership: the latest Tushare monthly `index_weight` snapshot on or before each rebalance date, including companies later removed or delisted.
 - Statements: only reports whose period has ended and whose `f_ann_date`/`ann_date` is on or before the rebalance date. Dividends: only events implemented by then. Prices: five years ending on the rebalance date.
 - The previous period's backtest Top10 drives the dividend-yield hysteresis.
-- `--bank-mode structured_only` (default) skips the bank report gate and scores banks on the common factors, renormalized, because historical bank report metrics are not cached. `--bank-mode metrics_file --bank-metrics-file PATH` applies a prepared bank metrics file.
+- `--bank-mode structured_only` (default) skips the bank report gate and scores banks on the common factors, renormalized. `--bank-mode metrics_file --bank-metrics-file PATH` applies a bank metrics history, using only reports announced by each rebalance date. Build it with `scripts/prepare_backtest_bank_metrics.py --data-root {data_root} --runs RUN_ID...` (downloads the needed annual reports under `{data_root}/a_dividend_backtest/bank_reports/`; each metric falls back from the A-share report to the H-share copy and then the annual summary).
 - Outcomes: dividend cut rate (within the next two fiscal years, a year whose comparable DPS and total cash dividend are both below 95% of the prior year, or a year with no cash dividend; a share issue that dilutes DPS while the total payout is maintained is not a cut), three-year realized DPS growth, equal-weight total return held to the next rebalance date against 中证红利全收益 (`H00922.CSI`) and 沪深300全收益 (`H00300.CSI`), and turnover. Only fiscal years complete by `--asof` are evaluated.
 - Raw history is cached once per security under `{data_root}/a_dividend_backtest/raw/{asof}/`; `--offline` reruns from that cache. Results go to `{data_root}/a_dividend_backtest/runs/{run_id}/` with `report.md`, `summary.csv`, `outcomes.csv`, per-period candidates and Top10, and `manifest.json` recording the code identity. Runs refuse a dirty working tree unless `--allow-dirty` is given.
 - Known limits: industry classification and main-business text are current, not historical; no trading costs.
-- `--rule-version v2` evaluates the proposed scoring v2 (`docs/scoring-v2-proposal.md`, `scripts/rules_v2.py`): the v1 gates plus G7 debt service (latest annual EBIT / interest at least `interest_coverage_min`, default 3; net debt at or below zero passes; a blank Tushare `ebit_to_interest` falls back to income-statement EBIT / interest expense), then 50% cross-group dividend record (consecutive years capped at 15, 10-year DPS cut count, 5-year DPS growth) and 50% within-group quality (no dividend-yield CV, no OPCFD). Candidate cross-cycle rules are off by default: `--rule-param cycle_gate_max_ratio=2` excludes companies whose latest deducted profit exceeds twice its 10-year median; `--rule-param cycle_factor_weight=0.2` blends a cross-group percentile of that ratio into the score. `--rule-param interest_coverage_min=N`, `record_block_weight=W`, `cycle_gate_nonfinancial_only=1` and `profit_dedt_min_change=-0.15` (the v1 profit-trend gate threshold, for sensitivity) are also accepted. `--perturbations N` rescores each period N times with every weight multiplied by U(0.8, 1.2) and renormalized (gates fixed) and reports the mean Top10 overlap. The formal screen still runs v1.
+- `--rule-version v2` evaluates the proposed scoring v2 (`docs/scoring-v2-proposal.md`, `scripts/rules_v2.py`): the v1 gates plus G7 debt service (latest annual EBIT / interest at least `interest_coverage_min`, default 3; net debt at or below zero passes; a blank Tushare `ebit_to_interest` falls back to income-statement EBIT / interest expense), then 50% cross-group dividend record (consecutive years capped at 15, 10-year DPS cut count, 5-year DPS growth) and 50% within-group quality (no dividend-yield CV, no OPCFD). In the backtest, candidate cross-cycle rules are off by default (the formal screen fixes `cycle_gate_max_ratio=2` and `cycle_gate_nonfinancial_only=1`): `--rule-param cycle_gate_max_ratio=2` excludes companies whose latest deducted profit exceeds twice its 10-year median; `--rule-param cycle_factor_weight=0.2` blends a cross-group percentile of that ratio into the score. `--rule-param interest_coverage_min=N`, `record_block_weight=W`, `cycle_gate_nonfinancial_only=1` and `profit_dedt_min_change=-0.15` (the v1 profit-trend gate threshold, for sensitivity) are also accepted. `--perturbations N` rescores each period N times with every weight multiplied by U(0.8, 1.2) and renormalized (gates fixed) and reports the mean Top10 overlap. To reproduce the formal rule pass `--rule-version v2 --rule-param cycle_gate_max_ratio=2 --rule-param cycle_gate_nonfinancial_only=1`.
 - Pass `--data-root` explicitly (or set `AHONGLI_DATA_ROOT`); run from the skill directory without it, the default resolves inside the skill.
 
 Never present a backtest Top10 as a formal result.

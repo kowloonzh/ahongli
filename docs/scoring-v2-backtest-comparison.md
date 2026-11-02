@@ -11,7 +11,7 @@
 
 | 简称 | 规则 | 命令参数 |
 |---|---|---|
-| v1 | 现行正式规则 | `--rule-version v1` |
+| v1 | 2026-11-02 之前的正式规则 | `--rule-version v1` |
 | v2 | 提案第 5 节：G7 利息覆盖 ≥3 倍；50% 跨组分红记录 + 50% 组内经营质量；去掉 CV、OPCFD | `--rule-version v2` |
 | v2 + 周期门槛 | v2，另排除最新扣非利润超过 10 年中位数 2 倍的非金融公司 | `--rule-param cycle_gate_max_ratio=2 --rule-param cycle_gate_nonfinancial_only=1` |
 

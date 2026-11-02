@@ -41,6 +41,17 @@ DIVIDEND_YIELD_ENTRY_RATIO = 0.80
 DIVIDEND_YIELD_RETENTION_RATIO = 0.75
 MIN_PROFIT_DEDT_THREE_YEAR_CHANGE = -0.10
 MAX_TOP_CANDIDATES_PER_INDUSTRY = 5
+RULE_VERSIONS = ("v1", "v2")
+# Formal default since 2026-11-02: rule v2 with the nonfinancial cross-cycle
+# gate (docs/scoring-v2-backtest-comparison.md). v1 stays selectable.
+DEFAULT_RULE_VERSION = "v2"
+STRUCTURED_HISTORY_YEARS = 7
+# v2 compares the latest deducted profit with its 10-year median, so the
+# fina_indicator history reaches further back, fetched in short windows to
+# stay under the interface's per-call row limit.
+PROFIT_HISTORY_YEARS = 12
+STATEMENT_WINDOW_YEARS = 4
+INTEREST_HISTORY_YEARS = 4
 INTEREST_BEARING_DEBT_FIELDS = [
     "st_borr",
     "lt_borr",
@@ -1546,6 +1557,26 @@ def formal_top_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return _industry_capped_top(rows)[0]
 
 
+def load_rules_v2():
+    """Import rules_v2 against this module even when it runs as ``__main__``."""
+    sys.modules.setdefault("run_a_dividend_strategy", sys.modules[__name__])
+    script_dir = str(Path(__file__).resolve().parent)
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
+    import rules_v2
+
+    return rules_v2
+
+
+def formal_rule_params(rule_version: str) -> dict[str, Any]:
+    if rule_version not in RULE_VERSIONS:
+        raise ValueError(f"未知规则版本：{rule_version}")
+    if rule_version == "v1":
+        return {}
+    rules_v2 = load_rules_v2()
+    return rules_v2.resolve_params(rules_v2.FORMAL_RULE_PARAMS)
+
+
 def is_financial_industry(industry: Any) -> bool:
     text = str(industry or "")
     return any(marker in text for marker in ["银行", "保险", "证券", "多元金融", "金融服务"])
@@ -1916,6 +1947,29 @@ CASHFLOW_FIELDS = (
 )
 
 
+INCOME_INTEREST_FIELDS = "ts_code,ann_date,f_ann_date,end_date,report_type,ebit,fin_exp_int_exp,total_profit,update_flag"
+
+
+def windowed_statement_fetch(method, *, ts_code: str, start_year: int, cutoff: str, fields: str) -> pd.DataFrame:
+    """Fetch a statement history in STATEMENT_WINDOW_YEARS-year calls and concatenate."""
+    frames = []
+    end_year = int(cutoff[:4])
+    year = start_year
+    while year <= end_year:
+        last = min(end_year, year + STATEMENT_WINDOW_YEARS - 1)
+        data = method(
+            ts_code=ts_code,
+            start_date=f"{year}0101",
+            end_date=cutoff if last == end_year else f"{last}1231",
+            fields=fields,
+        )
+        frame = pd.DataFrame(data) if data is not None else pd.DataFrame()
+        if not frame.empty:
+            frames.append(frame)
+        year = last + 1
+    return pd.concat(frames, ignore_index=True).drop_duplicates() if frames else pd.DataFrame()
+
+
 def fetch_structured_source_frames(
     client,
     ts_code: str,
@@ -1925,7 +1979,7 @@ def fetch_structured_source_frames(
 ) -> dict[str, pd.DataFrame]:
     """Fetch common ROE inputs for all companies and detailed inputs only for preflight passers."""
     cutoff = compact_date(run_date)
-    start_date = f"{int(cutoff[:4]) - 7}0101"
+    start_date = f"{int(cutoff[:4]) - STRUCTURED_HISTORY_YEARS}0101"
     income_data = client.income(
         ts_code=ts_code,
         start_date=start_date,
@@ -1949,10 +2003,11 @@ def fetch_structured_source_frames(
         ts_code=ts_code,
         fields=DIVIDEND_FIELDS,
     )
-    fina_data = client.fina_indicator(
+    fina_frame = windowed_statement_fetch(
+        client.fina_indicator,
         ts_code=ts_code,
-        start_date=start_date,
-        end_date=cutoff,
+        start_year=int(cutoff[:4]) - PROFIT_HISTORY_YEARS,
+        cutoff=cutoff,
         fields=FINA_INDICATOR_FIELDS,
     )
     cashflow_data = client.cashflow(
@@ -1962,10 +2017,18 @@ def fetch_structured_source_frames(
         fields=CASHFLOW_FIELDS,
     )
     audit_data = client.fina_audit(ts_code=ts_code, start_date=start_date, end_date=cutoff)
+    # EBIT and interest expense for the v2 debt-service gate (G7) fallback.
+    interest_data = client.income(
+        ts_code=ts_code,
+        start_date=f"{int(cutoff[:4]) - INTEREST_HISTORY_YEARS}0101",
+        end_date=cutoff,
+        fields=INCOME_INTEREST_FIELDS,
+    )
     frames.update(
         {
             "dividends": pd.DataFrame(dividend_data),
-            "fina_indicator": dedupe_statement_rows(pd.DataFrame(fina_data), cutoff),
+            "fina_indicator": dedupe_statement_rows(fina_frame, cutoff),
+            "income_interest": dedupe_statement_rows(pd.DataFrame(interest_data), cutoff),
             "cashflow": dedupe_statement_rows(pd.DataFrame(cashflow_data), cutoff),
             "audit": dedupe_statement_rows(pd.DataFrame(audit_data), cutoff),
         }
@@ -2166,6 +2229,27 @@ def build_structured_factor_records(
     return records
 
 
+def apply_rule_version(
+    records: list[dict[str, Any]],
+    details: dict[str, dict[str, pd.DataFrame] | Exception],
+    rule_version: str,
+    rule_params: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Add the rule version's own factors and gates to the common structured records."""
+    if rule_version == "v1":
+        return [{**record, "rule_version": "v1"} for record in records]
+    rules_v2 = load_rules_v2()
+    params_json = json.dumps(rule_params, sort_keys=True)
+    updated = []
+    for record in records:
+        frames = details.get(str(record["ts_code"]))
+        frames = frames if isinstance(frames, dict) else {}
+        applied = rules_v2.apply_v2(record, frames.get("fina_indicator"), rule_params, frames.get("income_interest"))
+        applied["rule_params_json"] = params_json
+        updated.append(applied)
+    return updated
+
+
 def ensure_structured_factor_data(
     run_date: str,
     market_dir: Path,
@@ -2176,7 +2260,10 @@ def ensure_structured_factor_data(
     max_workers: int = 4,
     pro=None,
     prior_formal_top: dict[str, Any] | None = None,
+    rule_version: str = DEFAULT_RULE_VERSION,
 ) -> dict[str, dict[str, Any]]:
+    rule_params = formal_rule_params(rule_version)
+    rule_params_json = json.dumps(rule_params, sort_keys=True)
     constituents = pd.read_csv(market_dir / "constituents.csv", dtype=str).fillna("")
     if limit:
         constituents = constituents.head(limit)
@@ -2188,6 +2275,19 @@ def ensure_structured_factor_data(
         if missing:
             raise RuntimeError(
                 f"缓存缺少{len(missing)}只成分股的结构化因子；请取消--skip-fetch刷新"
+            )
+        # v2 gates need source frames that are not cached, so a cache built
+        # under another rule version (or older caches without the column,
+        # which are v1) cannot be reused.
+        stale = [
+            code
+            for code in expected_codes
+            if (cached[code].get("rule_version") or "v1") != rule_version
+            or (rule_version != "v1" and cached[code].get("rule_params_json", "") != rule_params_json)
+        ]
+        if stale:
+            raise RuntimeError(
+                f"缓存的结构化因子不是按规则{rule_version}生成（{len(stale)}只）；请取消--skip-fetch刷新"
             )
         return {code: cached[code] for code in expected_codes}
 
@@ -2250,6 +2350,7 @@ def ensure_structured_factor_data(
         common,
         details,
     )
+    records = apply_rule_version(records, details, rule_version, rule_params)
     pd.DataFrame(records).to_csv(path, index=False, encoding="utf-8-sig")
     return {str(record["ts_code"]): record for record in records}
 
@@ -2314,8 +2415,8 @@ def build_candidate_rows(
 ) -> list[dict[str, Any]]:
     """Gate and rank one cross-section.
 
-    ``scorer`` replaces the default rule-v1 scoring (used by the backtest to
-    evaluate other rule versions); the default keeps formal runs unchanged.
+    ``scorer`` replaces the default rule-v1 scoring (rule v2 passes
+    ``rules_v2.score_v2``).
     """
     if constituents is None:
         assert market_dir is not None
@@ -2458,23 +2559,82 @@ def constituent_source_note(path: Path) -> str:
     return note + (f" {meta['warning']}。" if meta.get("warning") else "")
 
 
+V1_SCORING_NOTE = "非金融评分：ROE 20%、DROE 10%、OPCFD 15%、三年自由现金流覆盖20%、五年股息率CV 10%、连续分红年数10%、五年可比DPS CAGR 15%。其他金融评分：ROE 30%、DROE 15%、五年股息率CV 20%、连续分红年数20%、五年可比DPS CAGR 15%。银行独立评分：ROE 15%、DROE 5%、不良质量15%、拨备质量10%、资本韧性10%、净息差质量10%、成本收入比5%、股息率CV 10%、连续分红10%、DPS CAGR 10%。"
+FACTOR_LABELS = {
+    "roe": "ROE",
+    "droe": "DROE",
+    "fcf_dividend_coverage_3y": "三年FCF覆盖",
+    "bank_npl_quality": "不良质量",
+    "bank_provision_quality": "拨备质量",
+    "bank_capital_resilience": "资本韧性",
+    "bank_nim_quality": "净息差质量",
+    "bank_cost_income_ratio": "成本收入比",
+}
+
+
+def _weights_text(weights: dict[str, float]) -> str:
+    return "、".join(f"{FACTOR_LABELS.get(name, name)} {weight * 100:g}%" for name, weight in weights.items())
+
+
+def rule_notes(rule_version: str) -> tuple[str, str]:
+    """(gate note, scoring note) for the report header."""
+    common = "本策略先执行五年股息率市场预筛，再执行结构化盈利、支付率、现金流、审计和主营范围硬门槛。主营业务来自Tushare stock_company；直接地产主业排除。硬门槛不计分。"
+    if rule_version == "v1":
+        return common, V1_SCORING_NOTE
+    rules_v2 = load_rules_v2()
+    params = rules_v2.resolve_params(rules_v2.FORMAL_RULE_PARAMS)
+    gates = (
+        common
+        + f"规则v2另加两道非金融门槛：EBIT利息覆盖不低于{params['interest_coverage_min']:g}倍（净负债不为正直接通过）；"
+        + f"最新扣非利润不超过10年中位数的{params['cycle_gate_max_ratio']:g}倍（排除疑似周期高点）。"
+    )
+    weights = rules_v2.quality_weights("metrics_file")
+    block = float(params["record_block_weight"])
+    scoring = (
+        f"规则v2评分：总分 = {block * 100:g}% 分红记录 + {(1 - block) * 100:g}% 经营质量。"
+        f"分红记录在全部通过门槛的公司之间排名：连续分红年数（封顶{rules_v2.CONSECUTIVE_YEARS_CAP}年）、"
+        "近10年DPS削减次数、五年可比DPS CAGR，各占1/3。经营质量在组内排名："
+        f"非金融 {_weights_text(weights['nonfinancial'])}；银行 {_weights_text(weights['bank'])}；"
+        f"其他金融 {_weights_text(weights['financial'])}。"
+    )
+    return gates, scoring
+
+
+def v2_gate_exclusions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Companies whose only failed hard gate was a v2 gate (debt service or cross-cycle)."""
+    return [
+        row
+        for row in rows
+        if bool(row.get("market_preflight_passed"))
+        and (
+            str(row.get("structured_gate_reason", "")).startswith("最新扣非利润为10年中位数")
+            or str(row.get("structured_gate_reason", "")).startswith("EBIT利息覆盖")
+            or str(row.get("structured_gate_reason", "")) == "缺少最新年报EBIT利息覆盖倍数"
+        )
+    ]
+
+
 def write_markdown(
     rows: list[dict[str, Any]],
     run_date: str,
     path: Path,
     *,
     stage_counts: dict[str, int] | None = None,
+    rule_version: str = "v1",
 ) -> None:
     counts = stage_counts or {}
     top = formal_top_candidates(rows)
+    gate_note, scoring_note = rule_notes(rule_version)
     lines = [
         f"# 沪深300质量红利策略筛选报告 {run_date}",
         "",
         constituent_source_note(path),
         "",
-        "本策略先执行五年股息率市场预筛，再执行结构化盈利、支付率、现金流、审计和主营范围硬门槛。主营业务来自Tushare stock_company；直接地产主业排除。硬门槛不计分。",
+        f"评分规则：{rule_version}",
         "",
-        "非金融评分：ROE 20%、DROE 10%、OPCFD 15%、三年自由现金流覆盖20%、五年股息率CV 10%、连续分红年数10%、五年可比DPS CAGR 15%。其他金融评分：ROE 30%、DROE 15%、五年股息率CV 20%、连续分红年数20%、五年可比DPS CAGR 15%。银行独立评分：ROE 15%、DROE 5%、不良质量15%、拨备质量10%、资本韧性10%、净息差质量10%、成本收入比5%、股息率CV 10%、连续分红10%、DPS CAGR 10%。",
+        gate_note,
+        "",
+        scoring_note,
         "",
         "## 阶段数量",
         "",
@@ -2485,9 +2645,42 @@ def write_markdown(
         "",
         "## 正式 Top10",
         "",
-        "| 排名 | 公司 | 代码 | 总分 | 主营业务 | ROE | DROE | OPCFD | 三年FCF覆盖 | 股息率CV | 连续分红年数 | 五年DPS CAGR |",
-        "|---:|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
+    if rule_version == "v2":
+        lines.extend(
+            [
+                "| 排名 | 公司 | 代码 | 总分 | 分红记录分 | 经营质量分 | 主营业务 | ROE | DROE | 三年FCF覆盖 | 连续分红年数 | 10年DPS削减次数 | 五年DPS CAGR | 扣非/10年中位数 |",
+                "|---:|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|",
+            ]
+        )
+        for row in top:
+            lines.append(
+                f"| {row.get('rank', '')} | {row.get('name', '')} | {row.get('ts_code', '')} | "
+                f"{fmt_num(row.get('dividend_score_total'))} | {fmt_num(row.get('record_score'))} | {fmt_num(row.get('quality_score'))} | "
+                f"{str(row.get('main_business', ''))[:40]} | {fmt_num(row.get('roe'))} | {fmt_num(row.get('droe'))} | "
+                f"{fmt_num(row.get('fcf_dividend_coverage_3y'))} | {row.get('consecutive_dividend_years', '')} | "
+                f"{row.get('dps_cut_count_10y', '')} | {fmt_num((finite_float(row.get('dps_cagr_5y')) or 0) * 100)}% | "
+                f"{fmt_num(row.get('profit_dedt_to_10y_median'))} |"
+            )
+        excluded = v2_gate_exclusions(rows)
+        lines.extend(["", "## v2 门槛排除", ""])
+        if excluded:
+            lines.extend(["| 公司 | 代码 | 行业 | 原因 |", "|---|---|---|---|"])
+            for row in excluded:
+                lines.append(
+                    f"| {row.get('name', '')} | {row.get('ts_code', '')} | {row.get('industry', '')} | {row.get('structured_gate_reason', '')} |"
+                )
+        else:
+            lines.append("本期没有公司仅因 v2 新增门槛落选。")
+        lines.extend(["", "## 全量审计", "", "完整300只股票、所有硬门槛值、因子百分位、权重贡献和落选原因见同目录CSV与HTML。"])
+        path.write_text("\n".join(lines), encoding="utf-8")
+        return
+    lines.extend(
+        [
+            "| 排名 | 公司 | 代码 | 总分 | 主营业务 | ROE | DROE | OPCFD | 三年FCF覆盖 | 股息率CV | 连续分红年数 | 五年DPS CAGR |",
+            "|---:|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
     for row in top:
         lines.append(
             f"| {row.get('rank', '')} | {row.get('name', '')} | {row.get('ts_code', '')} | "
@@ -2506,11 +2699,30 @@ def write_html(
     path: Path,
     *,
     stage_counts: dict[str, int] | None = None,
+    rule_version: str = "v1",
 ) -> None:
     counts = stage_counts or {}
     body: list[str] = []
     for row in rows:
         cls = "selected" if row.get("selected") == "是" else ""
+        if rule_version == "v2":
+            body.append(
+                f"<tr class='{cls}'>"
+                f"<td>{row.get('rank','')}</td><td>{fmt_num(row.get('dividend_score_total'))}</td>"
+                f"<td>{fmt_num(row.get('record_score'))}</td><td>{fmt_num(row.get('quality_score'))}</td>"
+                f"<td>{escape(str(row.get('selected','否')))}</td>"
+                f"<td><strong>{escape(str(row.get('name','')))}</strong><br><span>{escape(str(row.get('ts_code','')))}</span></td>"
+                f"<td>{escape(str(row.get('industry','')))}</td><td>{escape(str(row.get('main_business','未取得')))}</td>"
+                f"<td>{fmt_num(row.get('roe'))}</td><td>{fmt_num(row.get('droe'))}</td>"
+                f"<td>{fmt_num(row.get('fcf_dividend_coverage_3y'))}</td>"
+                f"<td>{escape(str(row.get('consecutive_dividend_years','')))}</td>"
+                f"<td>{escape(str(row.get('dps_cut_count_10y','')))}</td>"
+                f"<td>{fmt_num((finite_float(row.get('dps_cagr_5y')) or 0)*100)}%</td>"
+                f"<td>{fmt_num(row.get('profit_dedt_to_10y_median'))}</td>"
+                f"<td>{escape(str(row.get('selection_status','')))}</td>"
+                f"<td>{escape(str(row.get('selected_reason','')))}</td></tr>"
+            )
+            continue
         body.append(
             f"<tr class='{cls}'>"
             f"<td>{row.get('rank','')}</td><td>{fmt_num(row.get('dividend_score_total'))}</td>"
@@ -2526,6 +2738,14 @@ def write_html(
             f"<td>{escape(str(row.get('selected_reason','')))}</td></tr>"
         )
     selected_count = sum(row.get("selected") == "是" for row in rows)
+    gate_note, scoring_note = rule_notes(rule_version)
+    if rule_version == "v2":
+        header_cells = ["排名", "总分", "分红记录分", "经营质量分", "入选", "公司", "行业", "主营业务", "ROE", "DROE", "三年FCF覆盖", "连续分红年数", "10年DPS削减次数", "五年DPS CAGR", "扣非/10年中位数", "状态", "理由"]
+        rule_paragraph = f"<p>评分规则 v2。{escape(gate_note)}</p><p>{escape(scoring_note)}</p>"
+    else:
+        header_cells = ["排名", "总分", "入选", "公司", "行业", "主营业务", "ROE", "DROE", "OPCFD", "三年FCF覆盖", "股息率CV", "连续分红年数", "五年DPS CAGR", "状态", "理由"]
+        rule_paragraph = "<p>市场预筛后执行支付率、TTM ROE稳定性、扣非利润、现金流覆盖、审计和主营范围硬门槛；银行另执行三年专项数据完整性、不良率、拨备和资本安全门槛，并使用独立评分模型。主营业务来自Tushare stock_company，直接地产主业排除。连续分红年数不封顶。</p>"
+    header_html = "".join(f"<th>{cell}</th>" for cell in header_cells)
     html = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <title>沪深300质量红利策略 {run_date}</title><style>
 body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;margin:0;background:#f7f8fa;color:#1f2937}}
@@ -2536,8 +2756,8 @@ th,td{{padding:8px;border-bottom:1px solid #e5e7eb;font-size:12px;vertical-align
 <section class="summary"><div class="card">沪深300总数<b>{counts.get('universe',len(rows))}</b></div><div class="card">市场预筛通过<b>{counts.get('market_passers',sum(bool(r.get('market_preflight_passed')) for r in rows))}</b></div>
 <div class="card">结构化门槛通过<b>{counts.get('structured_passers',sum(bool(r.get('structured_gate_passed')) for r in rows))}</b></div><div class="card">最终入选<b>{counts.get('selected',selected_count)}</b></div></section>
 <p>{escape(constituent_source_note(path))}</p>
-<p>市场预筛后执行支付率、TTM ROE稳定性、扣非利润、现金流覆盖、审计和主营范围硬门槛；银行另执行三年专项数据完整性、不良率、拨备和资本安全门槛，并使用独立评分模型。主营业务来自Tushare stock_company，直接地产主业排除。连续分红年数不封顶。</p>
-<table><thead><tr><th>排名</th><th>总分</th><th>入选</th><th>公司</th><th>行业</th><th>主营业务</th><th>ROE</th><th>DROE</th><th>OPCFD</th><th>三年FCF覆盖</th><th>股息率CV</th><th>连续分红年数</th><th>五年DPS CAGR</th><th>状态</th><th>理由</th></tr></thead>
+{rule_paragraph}
+<table><thead><tr>{header_html}</tr></thead>
 <tbody>{''.join(body)}</tbody></table></main></body></html>"""
     path.write_text(html, encoding="utf-8")
 
@@ -2551,8 +2771,10 @@ def run_strategy(
     sleep_seconds: float = 0.2,
     max_workers: int = 4,
     data_root: Path | str | None = None,
+    rule_version: str = DEFAULT_RULE_VERSION,
 ) -> Path:
     run_date = compact_date(run_date)
+    rule_params = formal_rule_params(rule_version)
     persistent_data_root = resolve_data_root(data_root)
     out = output_dir(run_date, data_root=persistent_data_root)
     out.mkdir(parents=True, exist_ok=True)
@@ -2574,6 +2796,7 @@ def run_strategy(
         sleep_seconds=sleep_seconds,
         max_workers=max_workers,
         prior_formal_top=prior_formal_top,
+        rule_version=rule_version,
     )
     bank_codes = {
         ts_code
@@ -2597,11 +2820,18 @@ def run_strategy(
         if bool(record.get("market_preflight_passed"))
         and bool(record.get("structured_gate_passed"))
     }
+    scorer = None
+    extra_fields = None
+    if rule_version == "v2":
+        rules_v2 = load_rules_v2()
+        scorer = lambda candidates: rules_v2.score_v2(candidates, rule_params, "metrics_file")
+        extra_fields = rules_v2.EXTRA_CSV_FIELDS
     rows = build_candidate_rows(
         market_dir,
         limit=limit,
         structured_factors=structured_factors,
         prior_formal_top=prior_formal_top,
+        scorer=scorer,
     )
     stage_counts = {
         "universe": len(rows),
@@ -2614,22 +2844,25 @@ def run_strategy(
         index=False,
         encoding="utf-8-sig",
     )
-    write_csv(rows, out / f"hs300-dividend-candidates-{run_date}.csv")
+    write_csv(rows, out / f"hs300-dividend-candidates-{run_date}.csv", extra_fields=extra_fields)
     write_csv(
         formal_top_candidates(rows),
         out / f"hs300-dividend-top10-{run_date}.csv",
+        extra_fields=extra_fields,
     )
     write_markdown(
         rows,
         run_date,
         out / f"hs300-dividend-report-{run_date}.md",
         stage_counts=stage_counts,
+        rule_version=rule_version,
     )
     write_html(
         rows,
         run_date,
         out / f"hs300-dividend-dashboard-{run_date}.html",
         stage_counts=stage_counts,
+        rule_version=rule_version,
     )
     return out
 
@@ -2663,6 +2896,7 @@ def run_pipeline(
     emit_forward_table: bool = True,
     data_root: Path | str | None = None,
     *,
+    rule_version: str = DEFAULT_RULE_VERSION,
     strategy_runner=None,
     forward_module_loader=None,
 ) -> dict[str, Any]:
@@ -2678,6 +2912,7 @@ def run_pipeline(
         sleep_seconds=sleep_seconds,
         max_workers=max_workers,
         data_root=persistent_data_root,
+        rule_version=rule_version,
     )
     result = {"output_dir": out, "forward": None, "forward_console": ""}
     if skip_forward_dividend:
@@ -2720,6 +2955,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--sleep-seconds", type=float, default=0.2)
     parser.add_argument("--max-workers", type=int, default=4)
+    parser.add_argument(
+        "--rule-version",
+        choices=RULE_VERSIONS,
+        default=DEFAULT_RULE_VERSION,
+        help="Scoring rule (default v2 with the nonfinancial cross-cycle gate; v1 is the pre-2026-11 rule)",
+    )
     return parser
 
 
@@ -2736,6 +2977,7 @@ def main(argv: list[str] | None = None) -> int:
         max_workers=args.max_workers,
         emit_forward_table=False,
         data_root=args.data_root,
+        rule_version=args.rule_version,
     )
     print(result["output_dir"])
     if result["forward"] is not None:

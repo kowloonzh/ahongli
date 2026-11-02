@@ -16,7 +16,9 @@ Score = record block (cross-group) and quality block (within group):
 - optional cross-cycle factor: lower latest-profit / 10-year-median ranks
   higher, blended with weight ``cycle_factor_weight``.
 
-The formal screen still runs rule v1; nothing here changes formal outputs.
+The formal screen runs rule v2 with ``FORMAL_RULE_PARAMS`` by default (since
+2026-11-02); the backtest's ``--rule-version v2`` uses ``DEFAULT_PARAMS``
+unless ``--rule-param`` overrides are given.
 """
 
 from __future__ import annotations
@@ -45,6 +47,13 @@ DEFAULT_PARAMS: dict[str, float | None] = {
     "cycle_factor_weight": 0.0,
     # Threshold of the v1 deducted-profit trend gate, for sensitivity runs.
     "profit_dedt_min_change": -0.10,
+}
+# Adopted after the 2016–2025 backtest (docs/scoring-v2-backtest-comparison.md):
+# exclude nonfinancial companies whose latest deducted profit exceeds twice
+# its 10-year median.
+FORMAL_RULE_PARAMS: dict[str, float] = {
+    "cycle_gate_max_ratio": 2.0,
+    "cycle_gate_nonfinancial_only": 1.0,
 }
 RECORD_FACTOR_WEIGHTS = {
     "consecutive_dividend_years_capped": 1 / 3,
@@ -156,7 +165,7 @@ def profit_cycle_profile(annual_profit: dict[int, float], anchor: int, years: in
     return result
 
 
-INCOME_INTEREST_FIELDS = "ts_code,ann_date,f_ann_date,end_date,report_type,ebit,fin_exp_int_exp,total_profit,update_flag"
+INCOME_INTEREST_FIELDS = strategy.INCOME_INTEREST_FIELDS
 
 
 def _annual_row(frame: pd.DataFrame | None, anchor: int) -> pd.Series | None:
