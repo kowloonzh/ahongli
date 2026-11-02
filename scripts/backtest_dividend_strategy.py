@@ -32,6 +32,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import run_a_dividend_strategy as strategy  # noqa: E402
+import rules_v2  # noqa: E402
 
 BACKTEST_ROOT_NAME = "a_dividend_backtest"
 DEFAULT_PERIODS = [f"{year}1101" for year in range(2016, 2026)]
@@ -55,9 +56,10 @@ STATEMENT_INTERFACES = {
     "cashflow": ("cashflow", strategy.CASHFLOW_FIELDS),
     "fina_indicator": ("fina_indicator", strategy.FINA_INDICATOR_FIELDS),
     "audit": ("fina_audit", None),
+    "income_interest": ("income", rules_v2.INCOME_INTEREST_FIELDS),
 }
 STRING_COLUMNS = {"ts_code", "con_code", "update_flag", "report_type", "div_proc", "comp_type"}
-RULE_VERSIONS = ("v1",)
+RULE_VERSIONS = ("v1", "v2")
 BANK_MODES = ("structured_only", "metrics_file")
 
 
@@ -78,6 +80,8 @@ def factor_weights_for(rule_version: str, bank_mode: str) -> dict[str, dict[str,
     factors cannot be computed, so banks are scored on the remaining common
     factors, renormalized. The report states this limitation.
     """
+    if rule_version == "v2":
+        return rules_v2.quality_weights(bank_mode)
     if rule_version != "v1":
         raise ValueError(f"unknown rule version: {rule_version}")
     weights = {group: dict(values) for group, values in strategy.default_factor_weights().items()}
@@ -208,9 +212,11 @@ class RawStore:
             if cache_key in self._memory:
                 return self._memory[cache_key]
         path = self.root / interface / f"{key}.csv"
-        if not path.exists():
+        stale = path.exists() and bool(self._missing_columns(interface, path))
+        if not path.exists() or stale:
             if self.offline:
-                raise RuntimeError(f"离线模式缺少缓存：{path}")
+                detail = f"缺少字段{self._missing_columns(interface, path)}" if stale else "缺少缓存"
+                raise RuntimeError(f"离线模式{detail}：{path}")
             data = self._fetch(interface, key)
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(".tmp")
@@ -220,6 +226,19 @@ class RawStore:
         with self._memory_lock:
             self._memory[cache_key] = data
         return data
+
+    @staticmethod
+    def _missing_columns(interface: str, path: Path) -> list[str]:
+        """Requested statement fields absent from a cache written by older code."""
+        fields = STATEMENT_INTERFACES.get(interface, (None, None))[1]
+        if not fields:
+            return []
+        with path.open(encoding="utf-8-sig") as handle:
+            header = handle.readline().strip()
+        if not header:
+            return []
+        present = set(header.split(","))
+        return [field for field in fields.split(",") if field not in present]
 
     def prefetch(self, requests: list[tuple[str, str]], max_workers: int) -> dict[tuple[str, str], Exception]:
         failures: dict[tuple[str, str], Exception] = {}
@@ -329,8 +348,15 @@ def screen_period(
     prior_top: dict[str, Any] | None,
     factor_weights: dict[str, dict[str, float]],
     bank_metrics_file: Path | None = None,
+    rule_version: str = "v1",
+    rule_params: dict[str, Any] | None = None,
+    bank_mode: str = "structured_only",
 ) -> list[dict[str, Any]]:
-    """Run the production screen for one rebalance date on as-of-date frames."""
+    """Run the screen for one rebalance date on as-of-date frames.
+
+    Rule v1 is the production screen unchanged. Rule v2 adds its factors and
+    gates to each structured record, then replaces the scoring.
+    """
     codes = constituents["ts_code"].astype(str).tolist()
 
     def market(prefix: str, code: str) -> pd.DataFrame:
@@ -383,6 +409,18 @@ def screen_period(
             bank_profiles = strategy.load_bank_quality_profiles(bank_metrics_file, bank_codes)
             for code, bank_profile in bank_profiles.items():
                 structured[code] = strategy.merge_bank_quality_gate(structured[code], bank_profile)
+    scorer = None
+    if rule_version == "v2":
+        params = rules_v2.resolve_params(rule_params)
+        for code, record in structured.items():
+            frames = details.get(code)
+            fina = frames.get("fina_indicator") if isinstance(frames, dict) else None
+            try:
+                income_interest = statement("income_interest", code) if isinstance(frames, dict) else None
+            except Exception:
+                income_interest = None
+            structured[code] = rules_v2.apply_v2(record, fina, params, income_interest)
+        scorer = lambda rows: rules_v2.score_v2(rows, params, bank_mode, group_weights=factor_weights)
     return strategy.build_candidate_rows(
         None,
         structured_factors=structured,
@@ -390,6 +428,7 @@ def screen_period(
         constituents=constituents,
         frame_loader=market,
         factor_weights=factor_weights,
+        scorer=scorer,
     )
 
 
@@ -556,6 +595,7 @@ def run_backtest(
     periods: list[str],
     asof: str,
     rule_version: str = "v1",
+    rule_params: dict[str, Any] | None = None,
     bank_mode: str = "structured_only",
     bank_metrics_file: Path | None = None,
     constituents_overrides: dict[str, Path] | None = None,
@@ -582,7 +622,11 @@ def run_backtest(
     asof = strategy.compact_date(asof)
     root = backtest_root(data_root)
     store = store or RawStore(root / "raw" / asof, asof, sleep_seconds=sleep_seconds, offline=offline)
-    run_id = run_id or f"{rule_version}-{bank_mode}-{periods[0]}-{periods[-1]}-asof{asof}"
+    if rule_params and rule_version != "v2":
+        raise ValueError("rule parameters apply only to rule v2")
+    resolved_params = rules_v2.resolve_params(rule_params) if rule_version == "v2" else {}
+    param_tag = "".join(f"-{key}{value}" for key, value in sorted((rule_params or {}).items()))
+    run_id = run_id or f"{rule_version}{param_tag}-{bank_mode}-{periods[0]}-{periods[-1]}-asof{asof}"
     out = root / "runs" / run_id
     (out / "periods").mkdir(parents=True, exist_ok=True)
     factor_weights = factor_weights_for(rule_version, bank_mode)
@@ -613,7 +657,8 @@ def run_backtest(
     print(f"{len(candidates)}只证券在至少一期接近市场预筛线，拉取财务明细", flush=True)
     failures.update(
         store.prefetch(
-            [(interface, code) for code in sorted(candidates) for interface in ("dividend", "fina_indicator", "cashflow", "audit", "adj_factor")],
+            [(interface, code) for code in sorted(candidates) for interface in ("dividend", "fina_indicator", "cashflow", "audit", "adj_factor")]
+            + ([("income_interest", code) for code in sorted(candidates)] if rule_version == "v2" else []),
             max_workers,
         )
     )
@@ -629,10 +674,14 @@ def run_backtest(
             prior_top=prior_top,
             factor_weights=factor_weights,
             bank_metrics_file=bank_metrics_file if bank_mode == "metrics_file" else None,
+            rule_version=rule_version,
+            rule_params=rule_params,
+            bank_mode=bank_mode,
         )
         top = strategy.formal_top_candidates(rows)
-        strategy.write_csv(rows, out / "periods" / f"{period}-candidates.csv")
-        strategy.write_csv(top, out / "periods" / f"{period}-top10.csv")
+        extra = rules_v2.EXTRA_CSV_FIELDS if rule_version == "v2" else None
+        strategy.write_csv(rows, out / "periods" / f"{period}-candidates.csv", extra)
+        strategy.write_csv(top, out / "periods" / f"{period}-top10.csv", extra)
         holdings[period] = top
         prior_codes = (prior_top or {}).get("codes", set())
         top_codes = [str(row["ts_code"]) for row in top]
@@ -724,6 +773,8 @@ def run_backtest(
         "constituents_overrides": {period: str(path) for period, path in overrides.items()},
         "initial_prior_top": sorted((initial_prior_top or {}).get("codes", [])),
         "factor_weights": factor_weights,
+        "rule_params": resolved_params,
+        "record_factor_weights": rules_v2.RECORD_FACTOR_WEIGHTS if rule_version == "v2" else {},
         "code_identity": identity,
         "fetch_failures": {f"{interface}:{code}": str(error) for (interface, code), error in failures.items()},
         "aggregate": aggregate,
@@ -775,7 +826,8 @@ def write_report(path: Path, manifest: dict[str, Any], summary: pd.DataFrame, ou
     lines = [
         f"# AHongli 历史回测 {manifest['run_id']}",
         "",
-        f"- 规则版本：`{manifest['rule_version']}`；银行口径：`{manifest['bank_mode']}`",
+        f"- 规则版本：`{manifest['rule_version']}`；银行口径：`{manifest['bank_mode']}`"
+        + (f"；参数：`{json.dumps(manifest['rule_params'], ensure_ascii=False)}`" if manifest.get("rule_params") else ""),
         f"- 调仓日：{manifest['periods'][0]}–{manifest['periods'][-1]}，共{len(manifest['periods'])}期；结果截至{manifest['asof']}",
         f"- 代码：{identity.get('kind')} `{identity.get('revision')}`{'（有未提交改动）' if identity.get('dirty') else ''}",
         "",
@@ -843,6 +895,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--periods", default=",".join(DEFAULT_PERIODS), help="逗号分隔的调仓日，默认 2016–2025 每年 11 月 1 日")
     parser.add_argument("--asof", default=datetime.now().strftime("%Y%m%d"), help="原始数据截止日与结果观察截止日")
     parser.add_argument("--rule-version", default="v1", choices=RULE_VERSIONS)
+    parser.add_argument("--rule-param", action="append", default=[], metavar="KEY=VALUE", help="v2 参数，如 interest_coverage_min=2、cycle_gate_max_ratio=2")
     parser.add_argument("--bank-mode", default="structured_only", choices=BANK_MODES)
     parser.add_argument("--bank-metrics-file", type=Path)
     parser.add_argument("--constituents-override", action="append", default=[], metavar="PERIOD=PATH")
@@ -862,6 +915,7 @@ def main(argv: list[str] | None = None) -> int:
         periods=[period for period in args.periods.split(",") if period.strip()],
         asof=args.asof,
         rule_version=args.rule_version,
+        rule_params=dict(item.split("=", 1) for item in args.rule_param) or None,
         bank_mode=args.bank_mode,
         bank_metrics_file=args.bank_metrics_file,
         constituents_overrides=_parse_overrides(args.constituents_override),

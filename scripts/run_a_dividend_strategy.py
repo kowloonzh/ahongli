@@ -1909,7 +1909,7 @@ DIVIDEND_FIELDS = (
     "ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,"
     "cash_div_tax,record_date,ex_date,pay_date,imp_ann_date,base_date,base_share"
 )
-FINA_INDICATOR_FIELDS = "ts_code,ann_date,end_date,profit_dedt,update_flag"
+FINA_INDICATOR_FIELDS = "ts_code,ann_date,end_date,profit_dedt,ebit_to_interest,netdebt,update_flag"
 CASHFLOW_FIELDS = (
     "ts_code,ann_date,f_ann_date,end_date,report_type,n_cashflow_act,"
     "c_pay_acq_const_fiolta,update_flag"
@@ -2310,7 +2310,13 @@ def build_candidate_rows(
     constituents: pd.DataFrame | None = None,
     frame_loader: Callable[[str, str], pd.DataFrame] | None = None,
     factor_weights: dict[str, dict[str, float]] | None = None,
+    scorer: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
+    """Gate and rank one cross-section.
+
+    ``scorer`` replaces the default rule-v1 scoring (used by the backtest to
+    evaluate other rule versions); the default keeps formal runs unchanged.
+    """
     if constituents is None:
         assert market_dir is not None
         constituents = pd.read_csv(market_dir / "constituents.csv", dtype=str)
@@ -2345,9 +2351,12 @@ def build_candidate_rows(
         rows.append(row)
 
     scoring_input = [row for row in rows if bool(row.get("market_preflight_passed"))]
-    scored_by_code = {
-        row["ts_code"]: row for row in score_cross_section(scoring_input, factor_weights=factor_weights)
-    }
+    scored = (
+        scorer(scoring_input)
+        if scorer is not None
+        else score_cross_section(scoring_input, factor_weights=factor_weights)
+    )
+    scored_by_code = {row["ts_code"]: row for row in scored}
     finalized: list[dict[str, Any]] = []
     for row in rows:
         ts_code = row["ts_code"]
@@ -2413,9 +2422,9 @@ def build_candidate_rows(
     return rows
 
 
-def csv_ready(row: dict[str, Any]) -> dict[str, str]:
+def csv_ready(row: dict[str, Any], fields: list[str] | None = None) -> dict[str, str]:
     result: dict[str, str] = {}
-    for field in CSV_FIELDS:
+    for field in fields or CSV_FIELDS:
         value = row.get(field, "")
         if isinstance(value, bool):
             result[field] = "是" if value else "否"
@@ -2426,13 +2435,18 @@ def csv_ready(row: dict[str, Any]) -> dict[str, str]:
     return result
 
 
-def write_csv(rows: list[dict[str, Any]], path: Path) -> None:
+def write_csv(
+    rows: list[dict[str, Any]],
+    path: Path,
+    extra_fields: list[str] | None = None,
+) -> None:
+    fields = CSV_FIELDS + [field for field in (extra_fields or []) if field not in CSV_FIELDS]
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
         for row in rows:
-            writer.writerow(csv_ready(row))
+            writer.writerow(csv_ready(row, fields))
 
 
 def constituent_source_note(path: Path) -> str:
