@@ -298,6 +298,43 @@ class ADividendStrategyTest(unittest.TestCase):
         self.assertEqual(result.iloc[0]["index_code"], "000300.SH")
         self.assertEqual(result.iloc[0]["name"], "公司0")
 
+    def test_unmatched_constituent_reports_original_code(self):
+        module = load_module()
+        weights = pd.DataFrame([{"con_code": "601059.SH", "trade_date": "20260930", "weight": 1}])
+        basic = pd.DataFrame([{"ts_code": "002294.SZ"}])
+        with self.assertRaisesRegex(RuntimeError, "601059.SH.*临时调整"):
+            module.build_latest_constituents(weights, basic, "20261030")
+
+    def test_profile_introduction_is_mandatory(self):
+        module = load_module()
+        constituents = pd.DataFrame([{"ts_code": "002294.SZ"}])
+        profiles = pd.DataFrame([{"ts_code": "002294.SZ", "main_business": "业务", "business_scope": "范围", "introduction": ""}])
+        with self.assertRaisesRegex(RuntimeError, "002294.SZ"):
+            module.enrich_constituents_with_company_profiles(constituents, profiles)
+
+    def test_csi_constituents_reject_stale_and_future_snapshots(self):
+        module = load_module()
+        class Client:
+            def trade_cal(self, **kwargs):
+                return pd.DataFrame([{"cal_date": d} for d in ("20261028", "20261029", "20261030")])
+        class Response:
+            content = b"source"
+            def raise_for_status(self):
+                pass
+        frame = pd.DataFrame([{"日期Date": "20261029", "指数代码 Index Code": "000300", "成份券代码Constituent Code": "002294", "交易所Exchange": "深圳证券交易所"}])
+        with tempfile.TemporaryDirectory() as tmp, patch.object(module.requests, "get", return_value=Response()), patch.object(module.pd, "read_excel", return_value=frame), patch.object(module, "EXPECTED_CONSTITUENT_COUNT", 1):
+            result = module.fetch_current_constituents(Client(), "20261030", Path(tmp))
+            self.assertEqual(result.iloc[0]["trade_date"], "20261029")
+            metadata = json.loads((Path(tmp) / "csi_constituents_source.json").read_text())
+            self.assertEqual(metadata["lag_trading_days"], 1)
+            self.assertTrue(metadata["warning"])
+            frame.loc[0, "日期Date"] = "20261028"
+            with self.assertRaisesRegex(RuntimeError, "20261030"):
+                module.fetch_current_constituents(Client(), "20261030", Path(tmp))
+            frame.loc[0, "日期Date"] = "20261102"
+            with self.assertRaisesRegex(RuntimeError, "20261030"):
+                module.fetch_current_constituents(Client(), "20261030", Path(tmp))
+
     def test_fetch_market_data_uses_hs300_index_and_writes_required_files(self):
         module = load_module()
 
@@ -398,9 +435,13 @@ class ADividendStrategyTest(unittest.TestCase):
         fetcher = getattr(module, "fetch_hs300_market_data", None)
         self.assertTrue(callable(fetcher), "缺少沪深300行情抓取函数")
         fake = FakePro()
+        membership = pd.DataFrame([
+            {"index_code": "000300.SH", "con_code": "000001.SZ", "trade_date": "20260806"},
+            {"index_code": "000300.SH", "con_code": "600000.SH", "trade_date": "20260806"},
+        ])
         with tempfile.TemporaryDirectory() as tmp, patch.object(
             module, "EXPECTED_CONSTITUENT_COUNT", 2
-        ):
+        ), patch.object(module, "fetch_current_constituents", return_value=membership):
             market = Path(tmp) / "market_data"
             fetcher(
                 "20260806",
@@ -502,7 +543,10 @@ class ADividendStrategyTest(unittest.TestCase):
         fake = FakePro()
         with tempfile.TemporaryDirectory() as tmp, patch.object(
             module, "EXPECTED_CONSTITUENT_COUNT", 3
-        ):
+        ), patch.object(module, "fetch_current_constituents", return_value=pd.DataFrame([
+            {"index_code": "000300.SH", "con_code": f"60000{index}.SH", "trade_date": "20260810"}
+            for index in range(3)
+        ])):
             market = Path(tmp) / "market_data"
             module.fetch_hs300_market_data(
                 "20260810",

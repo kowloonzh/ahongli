@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
+import io
 import json
 import math
 import os
@@ -18,12 +20,14 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import requests
 
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
 DATA_ROOT_ENV = "AHONGLI_DATA_ROOT"
 INDEX_CODE = "000300.SH"
 INDEX_NAME = "沪深300"
+CSI_CONSTITUENTS_URL = "https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/file/autofile/cons/000300cons.xls"
 EXPECTED_CONSTITUENT_COUNT = 300
 OUTPUT_ROOT_NAME = "a_dividend_outputs"
 MIN_DIVIDEND_YIELD_VALID_DAYS = 1000
@@ -279,6 +283,13 @@ def build_latest_constituents(
         )
         if "ts_code_basic" in latest.columns:
             latest["ts_code"] = latest["ts_code_basic"]
+        missing_basic = latest["ts_code"].isna()
+        if missing_basic.any():
+            codes = "、".join(latest.loc[missing_basic, left_code].astype(str).head(10).tolist())
+            raise RuntimeError(
+                f"成分股快照包含未匹配在上市公司资料的证券：{codes}；"
+                "快照可能未反映临时调整，请核实最新成分股名单"
+            )
     else:
         latest["ts_code"] = latest[left_code]
     latest["index_code"] = INDEX_CODE
@@ -288,6 +299,7 @@ def build_latest_constituents(
         "con_code",
         "trade_date",
         "weight",
+        "weight_trade_date",
         "ts_code",
         "symbol",
         "name",
@@ -319,6 +331,44 @@ def tushare_pro():
     return ts.pro_api(token)
 
 
+def fetch_current_constituents(client, run_date: str, market: Path) -> pd.DataFrame:
+    end = compact_date(run_date)
+    start = (datetime.strptime(end, "%Y%m%d") - timedelta(days=30)).strftime("%Y%m%d")
+    calendar = client.trade_cal(exchange="SSE", start_date=start, end_date=end, is_open="1")
+    if calendar is None or calendar.empty:
+        raise RuntimeError("无法确认运行日最近交易日，不能验证成分股日期")
+    trading_dates = sorted(set(calendar["cal_date"].dropna().astype(str)))
+    expected_date = trading_dates[-1]
+    response = requests.get(CSI_CONSTITUENTS_URL, timeout=30)
+    response.raise_for_status()
+    raw = response.content
+    frame = pd.read_excel(io.BytesIO(raw), dtype=str)
+    date_col, index_col = "日期Date", "指数代码 Index Code"
+    code_col, exchange_col = "成份券代码Constituent Code", "交易所Exchange"
+    for col in (date_col, index_col, code_col, exchange_col):
+        if col not in frame.columns:
+            raise RuntimeError(f"中证成分股文件缺少字段: {col}")
+    dates = frame[date_col].dropna().astype(str).unique().tolist()
+    if len(dates) != 1 or dates[0] not in trading_dates[-2:]:
+        raise RuntimeError(f"中证成分股文件日期{dates}，须为最近交易日{expected_date}或其前一个交易日；数据过期或不适用于历史运行")
+    snapshot_date = dates[0]
+    lag = int(snapshot_date != expected_date)
+    warning = "名单滞后一个交易日，尚未核验当天生效的指数调整，名单可能发生变化" if lag else ""
+    if warning:
+        print(f"警告：{warning}（名单日期{snapshot_date}，最近交易日{expected_date}）", flush=True)
+    if not frame[index_col].astype(str).str.zfill(6).eq("000300").all():
+        raise RuntimeError("中证成分股文件指数代码不一致")
+    exchange = frame[exchange_col].map({"上海证券交易所": "SH", "深圳证券交易所": "SZ"})
+    if exchange.isna().any():
+        raise RuntimeError("中证成分股文件存在未知交易所")
+    codes = frame[code_col].astype(str).str.zfill(6) + "." + exchange
+    if len(codes) != EXPECTED_CONSTITUENT_COUNT or codes.nunique() != EXPECTED_CONSTITUENT_COUNT:
+        raise RuntimeError("中证成分股文件数量或唯一性校验失败")
+    (market / "csi_constituents_source.xls").write_bytes(raw)
+    (market / "csi_constituents_source.json").write_text(json.dumps({"url": CSI_CONSTITUENTS_URL, "snapshot_date": snapshot_date, "latest_trade_date": expected_date, "lag_trading_days": lag, "warning": warning, "sha256": hashlib.sha256(raw).hexdigest(), "rows": len(codes)}, ensure_ascii=False, indent=2), encoding="utf-8")
+    return pd.DataFrame({"con_code": codes, "trade_date": snapshot_date, "index_code": INDEX_CODE})
+
+
 def _load_constituents_file(path: Path, data_end_date: str) -> pd.DataFrame:
     data = pd.read_csv(path, dtype=str)
     if "ts_code" not in data.columns and "con_code" in data.columns:
@@ -336,6 +386,7 @@ def _load_constituents_file(path: Path, data_end_date: str) -> pd.DataFrame:
         "con_code",
         "trade_date",
         "weight",
+        "weight_trade_date",
         "ts_code",
         "symbol",
         "name",
@@ -385,9 +436,10 @@ def enrich_constituents_with_company_profiles(
     missing = merged[
         merged["main_business"].fillna("").astype(str).str.strip().eq("")
         | merged["business_scope"].fillna("").astype(str).str.strip().eq("")
+        | merged["introduction"].fillna("").astype(str).str.strip().eq("")
     ]
     if not missing.empty:
-        examples = "、".join(missing["ts_code"].astype(str).head(5))
+        examples = "、".join(missing["ts_code"].fillna("<missing>").astype(str).head(5).tolist())
         raise RuntimeError(
             f"stock_company主营资料未覆盖{len(missing)}只沪深300公司，示例：{examples}"
         )
@@ -413,8 +465,6 @@ def fetch_hs300_market_data(
 
     if fixed_constituents_file is not None:
         constituents = _load_constituents_file(fixed_constituents_file, data_end_date)
-    elif cached_constituents.exists() and not refresh_constituents:
-        constituents = _load_constituents_file(cached_constituents, data_end_date)
     else:
         end_dt = datetime.strptime(data_end_date, "%Y%m%d")
         weights = client.index_weight(
@@ -423,18 +473,32 @@ def fetch_hs300_market_data(
             end_date=data_end_date,
         )
         weights = pd.DataFrame() if weights is None else pd.DataFrame(weights)
+        if weights.empty or "trade_date" not in weights or "con_code" not in weights:
+            raise RuntimeError("未取得沪深300月度权重")
+        eligible = weights[weights["trade_date"].astype(str) <= data_end_date]
+        if eligible.empty:
+            raise RuntimeError("运行日前无可用月度权重")
+        weight_date = eligible["trade_date"].astype(str).max()
+        monthly = eligible[eligible["trade_date"].astype(str).eq(weight_date)].copy()
+        if len(monthly) != EXPECTED_CONSTITUENT_COUNT or monthly["con_code"].nunique() != EXPECTED_CONSTITUENT_COUNT:
+            raise RuntimeError("月度权重快照不完整或存在重复证券")
+        monthly.to_csv(market / "monthly_index_weight.csv", index=False, encoding="utf-8-sig")
+        membership = fetch_current_constituents(client, data_end_date, market)
+        membership = membership.merge(monthly[["con_code", "weight"]], on="con_code", how="left", validate="one_to_one")
+        membership["weight_trade_date"] = weight_date
         stock_basic = client.stock_basic(
             exchange="",
             list_status="L",
             fields="ts_code,symbol,name,area,industry,market,list_date",
         )
         stock_basic = pd.DataFrame() if stock_basic is None else pd.DataFrame(stock_basic)
-        constituents = build_latest_constituents(weights, stock_basic, data_end_date)
+        constituents = build_latest_constituents(membership, stock_basic, data_end_date)
 
     profile_complete = bool(
         all(field in constituents.columns for field in ["main_business", "business_scope", "introduction"])
         and constituents["main_business"].fillna("").astype(str).str.strip().ne("").all()
         and constituents["business_scope"].fillna("").astype(str).str.strip().ne("").all()
+        and constituents["introduction"].fillna("").astype(str).str.strip().ne("").all()
     )
     if not profile_complete:
         constituents = enrich_constituents_with_company_profiles(
@@ -1800,6 +1864,14 @@ def ensure_market_data(
         if not constituents_path.exists():
             raise RuntimeError("--skip-fetch缺少constituents.csv")
         constituents = pd.read_csv(constituents_path, dtype=str).fillna("")
+        source_meta = market / "csi_constituents_source.json"
+        source_file = market / "csi_constituents_source.xls"
+        if not source_meta.exists() or not source_file.exists():
+            raise RuntimeError("--skip-fetch缺少经校验的中证成分股源文件与元数据")
+        meta = json.loads(source_meta.read_text(encoding="utf-8"))
+        if (hashlib.sha256(source_file.read_bytes()).hexdigest() != meta.get("sha256")
+                or not constituents["trade_date"].eq(meta.get("snapshot_date")).all()):
+            raise RuntimeError("--skip-fetch成分股缓存与中证源文件不一致")
         missing_fields = [
             field
             for field in ["main_business", "business_scope", "introduction"]
@@ -1933,6 +2005,15 @@ def write_csv(rows: list[dict[str, Any]], path: Path) -> None:
             writer.writerow(csv_ready(row))
 
 
+def constituent_source_note(path: Path) -> str:
+    meta_path = path.parent / "market_data" / "csi_constituents_source.json"
+    if not meta_path.exists():
+        return "成分股名单来源及日期未记录。"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    note = f"中证成分股名单日期：{meta.get('snapshot_date', '未知')}；最近交易日：{meta.get('latest_trade_date', '未知')}；滞后交易日：{meta.get('lag_trading_days', '未知')}。"
+    return note + (f" {meta['warning']}。" if meta.get("warning") else "")
+
+
 def write_markdown(
     rows: list[dict[str, Any]],
     run_date: str,
@@ -1944,6 +2025,8 @@ def write_markdown(
     top = formal_top_candidates(rows)
     lines = [
         f"# 沪深300质量红利策略筛选报告 {run_date}",
+        "",
+        constituent_source_note(path),
         "",
         "本策略先执行五年股息率市场预筛，再执行结构化盈利、支付率、现金流、审计和主营范围硬门槛。主营业务来自Tushare stock_company；直接地产主业排除。硬门槛不计分。",
         "",
@@ -2008,6 +2091,7 @@ th,td{{padding:8px;border-bottom:1px solid #e5e7eb;font-size:12px;vertical-align
 </style></head><body><header><h1>沪深300质量红利策略</h1><p>分析日期：{run_date}｜硬门槛先行｜银行、其他金融与非金融分别评分｜正式 Top10</p></header><main>
 <section class="summary"><div class="card">沪深300总数<b>{counts.get('universe',len(rows))}</b></div><div class="card">市场预筛通过<b>{counts.get('market_passers',sum(bool(r.get('market_preflight_passed')) for r in rows))}</b></div>
 <div class="card">结构化门槛通过<b>{counts.get('structured_passers',sum(bool(r.get('structured_gate_passed')) for r in rows))}</b></div><div class="card">最终入选<b>{counts.get('selected',selected_count)}</b></div></section>
+<p>{escape(constituent_source_note(path))}</p>
 <p>市场预筛后执行支付率、TTM ROE稳定性、扣非利润、现金流覆盖、审计和主营范围硬门槛；银行另执行三年专项数据完整性、不良率、拨备和资本安全门槛，并使用独立评分模型。主营业务来自Tushare stock_company，直接地产主业排除。连续分红年数不封顶。</p>
 <table><thead><tr><th>排名</th><th>总分</th><th>入选</th><th>公司</th><th>行业</th><th>主营业务</th><th>ROE</th><th>DROE</th><th>OPCFD</th><th>三年FCF覆盖</th><th>股息率CV</th><th>连续分红年数</th><th>五年DPS CAGR</th><th>状态</th><th>理由</th></tr></thead>
 <tbody>{''.join(body)}</tbody></table></main></body></html>"""
