@@ -320,7 +320,11 @@ def score_v2(
     for factor in record_weights:
         record_parts[factor] = _percentiles(gated, factor, higher_is_better=factor not in RECORD_LOWER_IS_BETTER)
     record_score = sum(record_parts[factor] * weight for factor, weight in record_weights.items()) / sum(record_weights.values())
-    ratio = pd.to_numeric(gated.get("profit_dedt_to_10y_median"), errors="coerce").replace(math.inf, 1e12) if not gated.empty else pd.Series(dtype=float)
+    ratio = (
+        pd.to_numeric(gated["profit_dedt_to_10y_median"], errors="coerce").replace(math.inf, 1e12)
+        if "profit_dedt_to_10y_median" in gated
+        else pd.Series(float("nan"), index=gated.index)
+    )
     cycle = _percentiles(pd.DataFrame({"r": ratio}, index=gated.index), "r", higher_is_better=False).fillna(50.0)
     block_weight = float(params["record_block_weight"])
     cycle_weight = float(params["cycle_factor_weight"] or 0.0)

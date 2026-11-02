@@ -225,6 +225,68 @@ class BacktestDividendStrategyTest(unittest.TestCase):
         self.assertEqual(full["bank"], module.strategy.BANK_FACTOR_WEIGHTS)
         self.assertEqual(weights["nonfinancial"], module.strategy.NONFINANCIAL_FACTOR_WEIGHTS)
 
+    def perturbation_rows(self, count=12, gap=10.0):
+        rows = []
+        for index in range(count):
+            quality = 100.0 - index * gap
+            rows.append(
+                {
+                    "ts_code": f"{index:06d}.SH",
+                    "industry": f"行业{index}",
+                    "is_financial": False,
+                    "is_bank": False,
+                    "market_preflight_passed": True,
+                    "structured_gate_passed": True,
+                    "roe": quality,
+                    "droe": quality,
+                    "roe_stability_12q": 1.0,
+                    "fcf_dividend_coverage_3y": quality,
+                    "consecutive_dividend_years_capped": quality,
+                    "dps_cut_count_10y": index,
+                    "dps_cagr_5y": quality / 1000,
+                }
+            )
+        return rows
+
+    def test_perturbation_keeps_a_well_separated_top10(self):
+        module = load_module()
+        weights = module.factor_weights_for("v2", "structured_only")
+
+        result = module.perturbation_overlaps(
+            self.perturbation_rows(), rule_version="v2", bank_mode="structured_only",
+            group_weights=weights, rule_params=None, draws=20, seed=1,
+        )
+
+        self.assertEqual(len(result["base_top"]), 10)
+        self.assertEqual(result["base_top"][0], "000000.SH")
+        self.assertEqual(result["perturbation_mean_overlap"], 10)
+        self.assertEqual(result["perturbation_mean_overlap_ratio"], 1.0)
+
+    def test_perturbation_is_seeded_and_detects_fragile_rankings(self):
+        module = load_module()
+        weights = module.factor_weights_for("v2", "structured_only")
+        rows = self.perturbation_rows(count=14)
+        # Make the record and quality blocks disagree so weights decide the order.
+        for index, row in enumerate(rows):
+            row["consecutive_dividend_years_capped"] = float(index)
+            row["dps_cut_count_10y"] = 14 - index
+            row["dps_cagr_5y"] = index / 1000
+
+        first = module.perturbation_overlaps(rows, rule_version="v2", bank_mode="structured_only", group_weights=weights, rule_params=None, draws=30, seed=7)
+        second = module.perturbation_overlaps(rows, rule_version="v2", bank_mode="structured_only", group_weights=weights, rule_params=None, draws=30, seed=7)
+
+        self.assertEqual(first, second)
+        self.assertLess(first["perturbation_min_overlap"], 10)
+
+    def test_gate_failures_never_enter_the_rescored_top(self):
+        module = load_module()
+        rows = self.perturbation_rows()
+        rows[0]["structured_gate_passed"] = False
+
+        top = module.rescored_top_codes(rows, rule_version="v2", bank_mode="structured_only", group_weights=module.factor_weights_for("v2", "structured_only"))
+
+        self.assertNotIn("000000.SH", top)
+
 
 if __name__ == "__main__":
     unittest.main()

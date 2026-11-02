@@ -31,6 +31,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+import random  # noqa: E402
+
 import run_a_dividend_strategy as strategy  # noqa: E402
 import rules_v2  # noqa: E402
 
@@ -61,6 +63,9 @@ STATEMENT_INTERFACES = {
 STRING_COLUMNS = {"ts_code", "con_code", "update_flag", "report_type", "div_proc", "comp_type"}
 RULE_VERSIONS = ("v1", "v2")
 BANK_MODES = ("structured_only", "metrics_file")
+PERTURBATION_LOW = 0.8
+PERTURBATION_HIGH = 1.2
+PERTURBATION_SEED = 20161101
 
 
 # ---------------------------------------------------------------------------
@@ -433,6 +438,99 @@ def screen_period(
 
 
 # ---------------------------------------------------------------------------
+# Weight-perturbation robustness
+# ---------------------------------------------------------------------------
+
+
+def rescored_top_codes(
+    rows: list[dict[str, Any]],
+    *,
+    rule_version: str,
+    bank_mode: str,
+    group_weights: dict[str, dict[str, float]],
+    record_weights: dict[str, float] | None = None,
+    rule_params: dict[str, Any] | None = None,
+) -> list[str]:
+    """Top10 after rescoring one period's rows; gate results stay as computed."""
+    scoring_input = [row for row in rows if bool(row.get("market_preflight_passed"))]
+    if rule_version == "v2":
+        scored = rules_v2.score_v2(
+            scoring_input,
+            rules_v2.resolve_params(rule_params),
+            bank_mode,
+            record_weights=record_weights,
+            group_weights=group_weights,
+        )
+    else:
+        scored = strategy.score_cross_section(scoring_input, factor_weights=group_weights)
+    for row in scored:
+        eligible = bool(row.get("structured_gate_passed")) and strategy.finite_float(row.get("dividend_score_total")) is not None
+        row["selected"] = "是" if eligible else "否"
+    return [str(row["ts_code"]) for row in strategy.formal_top_candidates(scored)]
+
+
+def _perturbed(weights: dict[str, float], rng: random.Random) -> dict[str, float]:
+    return _normalized_or_empty({factor: weight * rng.uniform(PERTURBATION_LOW, PERTURBATION_HIGH) for factor, weight in weights.items()})
+
+
+def _normalized_or_empty(weights: dict[str, float]) -> dict[str, float]:
+    return _normalized(weights) if weights else {}
+
+
+def perturbation_overlaps(
+    rows: list[dict[str, Any]],
+    *,
+    rule_version: str,
+    bank_mode: str,
+    group_weights: dict[str, dict[str, float]],
+    rule_params: dict[str, Any] | None,
+    draws: int,
+    seed: int,
+) -> dict[str, Any]:
+    """Overlap of the Top10 under ``draws`` random weight perturbations.
+
+    Every weight is multiplied by U(0.8, 1.2) and renormalized within its
+    block; for v2 the record/quality block split is perturbed the same way.
+    """
+    base = rescored_top_codes(
+        rows,
+        rule_version=rule_version,
+        bank_mode=bank_mode,
+        group_weights=group_weights,
+        record_weights=rules_v2.RECORD_FACTOR_WEIGHTS if rule_version == "v2" else None,
+        rule_params=rule_params,
+    )
+    rng = random.Random(seed)
+    overlaps: list[int] = []
+    for _ in range(draws):
+        groups = {group: _perturbed(weights, rng) for group, weights in group_weights.items()}
+        record = None
+        params = dict(rule_params or {})
+        if rule_version == "v2":
+            record = _perturbed(rules_v2.RECORD_FACTOR_WEIGHTS, rng)
+            block = float(rules_v2.resolve_params(rule_params)["record_block_weight"])
+            split = _perturbed({"record": block, "quality": 1 - block}, rng)
+            params["record_block_weight"] = split["record"]
+        top = rescored_top_codes(
+            rows,
+            rule_version=rule_version,
+            bank_mode=bank_mode,
+            group_weights=groups,
+            record_weights=record,
+            rule_params=params,
+        )
+        overlaps.append(len(set(top) & set(base)))
+    mean = sum(overlaps) / len(overlaps) if overlaps else None
+    return {
+        "base_top": base,
+        "perturbation_draws": draws,
+        "perturbation_mean_overlap": mean,
+        "perturbation_mean_overlap_ratio": mean / len(base) if mean is not None and base else None,
+        "perturbation_min_overlap": min(overlaps) if overlaps else None,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Outcomes
 # ---------------------------------------------------------------------------
 
@@ -606,6 +704,7 @@ def run_backtest(
     sleep_seconds: float = 0.2,
     offline: bool = False,
     allow_dirty: bool = False,
+    perturbations: int = 0,
     store: RawStore | None = None,
     code_identity: dict[str, Any] | None = None,
 ) -> Path:
@@ -700,6 +799,19 @@ def run_backtest(
                 "top10": "、".join(str(row.get("name", "")) for row in top),
             }
         )
+        if perturbations:
+            robustness = perturbation_overlaps(
+                rows,
+                rule_version=rule_version,
+                bank_mode=bank_mode,
+                group_weights=factor_weights,
+                rule_params=rule_params,
+                draws=perturbations,
+                seed=PERTURBATION_SEED + int(period),
+            )
+            if robustness["base_top"] != top_codes:
+                raise RuntimeError(f"{period}：重新计分的基准Top10与筛选结果不一致")
+            period_rows[-1].update({key: value for key, value in robustness.items() if key != "base_top"})
         prior_top = prior_top_from_codes(period, top_codes, f"backtest:{run_id}:{period}")
         print(f"{period}：入选{period_rows[-1]['selected']}家，Top10 {period_rows[-1]['top10']}", flush=True)
 
@@ -777,6 +889,7 @@ def run_backtest(
         "record_factor_weights": rules_v2.RECORD_FACTOR_WEIGHTS if rule_version == "v2" else {},
         "code_identity": identity,
         "fetch_failures": {f"{interface}:{code}": str(error) for (interface, code), error in failures.items()},
+        "perturbations": perturbations,
         "aggregate": aggregate,
     }
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
@@ -807,6 +920,8 @@ def aggregate_metrics(summary: pd.DataFrame, outcomes: pd.DataFrame) -> dict[str
         "dps_growth_3y_observations": int(len(growth)),
         "mean_turnover": float(summary["turnover"].dropna().mean()) if summary["turnover"].notna().any() else None,
         "full_holding_years": int(len(full_years)),
+        "perturbation_mean_overlap": float(summary["perturbation_mean_overlap"].mean()) if "perturbation_mean_overlap" in summary else None,
+        "perturbation_mean_overlap_ratio": float(summary["perturbation_mean_overlap_ratio"].mean()) if "perturbation_mean_overlap_ratio" in summary else None,
         "portfolio_annualized": _annualized(full_years["portfolio_return"].dropna().tolist()),
     }
     for code in BENCHMARKS:
@@ -841,6 +956,11 @@ def write_report(path: Path, manifest: dict[str, Any], summary: pd.DataFrame, ou
         f"| 平均年换手率 | {_pct(aggregate['mean_turnover'], 0)} |",
         f"| 等权组合年化全收益（{aggregate['full_holding_years']} 个完整年度） | {_pct(aggregate['portfolio_annualized'])} |",
     ]
+    if aggregate.get("perturbation_mean_overlap") is not None:
+        lines.append(
+            f"| 权重扰动（每个权重×U({PERTURBATION_LOW}, {PERTURBATION_HIGH})后归一，每期{manifest.get('perturbations')}次）Top10 平均重合 | "
+            f"{aggregate['perturbation_mean_overlap']:.2f} 家（{_pct(aggregate['perturbation_mean_overlap_ratio'])}） |"
+        )
     for code, label in BENCHMARKS.items():
         lines.append(f"| {label}年化 | {_pct(aggregate.get(f'{code}_annualized'))} |")
     lines += [
@@ -906,6 +1026,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sleep-seconds", type=float, default=0.2)
     parser.add_argument("--offline", action="store_true", help="只用已缓存的原始数据")
     parser.add_argument("--allow-dirty", action="store_true")
+    parser.add_argument("--perturbations", type=int, default=0, help="每期权重扰动次数（稳健性检验，默认不做）")
     return parser
 
 
@@ -926,6 +1047,7 @@ def main(argv: list[str] | None = None) -> int:
         sleep_seconds=args.sleep_seconds,
         offline=args.offline,
         allow_dirty=args.allow_dirty,
+        perturbations=args.perturbations,
     )
     print(out)
     print((out / "report.md").read_text(encoding="utf-8"))
