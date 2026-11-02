@@ -24,8 +24,10 @@ class ForwardDividendModelsTest(unittest.TestCase):
         policy = module.load_target_yield_policy()
 
         self.assertEqual(policy["policy_id"], "ahongli-target-yield-policy")
-        self.assertEqual(policy["version"], "3")
+        self.assertEqual(policy["version"], "4")
         self.assertEqual(policy["categories"]["bank"]["risk_spread_low"], 0.068)
+        self.assertEqual(policy["categories"]["insurance"]["risk_spread_low"], 0.068)
+        self.assertEqual(policy["categories"]["insurance"]["risk_spread_high"], 0.083)
         self.assertEqual(len(policy["sha256"]), 64)
 
     def test_ttm_profit_uses_prior_fy_minus_prior_same_period_plus_current(self):
@@ -103,7 +105,7 @@ class ForwardDividendModelsTest(unittest.TestCase):
         self.assertAlmostEqual(result["required_return_high"], 0.10)
         self.assertAlmostEqual(result["target_yield_low"], 0.055)
         self.assertAlmostEqual(result["target_yield_high"], 0.07)
-        self.assertEqual(result["target_yield_model_version"], "3")
+        self.assertEqual(result["target_yield_model_version"], "4")
 
     def test_valuation_uses_target_yield_and_reports_decision_position(self):
         module = load_module()

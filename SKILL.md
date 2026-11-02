@@ -231,7 +231,7 @@ Every successful run must write `market_data/forward-dividend-replay-manifest.js
 
 Each normalized fact references a stable `evidence_span_id`; each span retains the source document ID, page, raw excerpt, and extractor version. Persist low/base/high profit and payout inputs plus fact-selection decisions. After actual regular DPS is disclosed, use `evaluate_forecast_accuracy.py` to retain signed/absolute error, relative error, range coverage, and model version.
 
-Bank target-yield ranges add a 0.5 percentage-point safety margin to the lower bound only. Equivalently, use a 6.8% bank risk-spread lower bound instead of 6.3%, while retaining the 8.3% upper bound; for example, `5%–7%` becomes `5.5%–7%` and `6%–8%` becomes `6.5%–8%`. Do not apply this adjustment to insurance, telecom, utilities, or other non-bank companies.
+Bank and insurance target-yield ranges add a 0.5 percentage-point safety margin to the lower bound only. Equivalently, use a 6.8% risk-spread lower bound instead of 6.3% for both categories, while retaining the 8.3% upper bound; for example, `5%–7%` becomes `5.5%–7%` and `6%–8%` becomes `6.5%–8%`. Do not apply this adjustment to telecom, utilities, or other non-bank, non-insurance companies.
 
 Bind payout evidence to complete fiscal years. A full-year DPS that already includes an interim dividend must not be added to that interim dividend again, and a historical restatement footnote must not be assigned to the current report year. When a bank policy provides only a payout floor and three complete annual actual payout ratios are available, use the floor for the low scenario, the three-year median for the base scenario, and the three-year maximum for the high scenario, subject to the existing capital checks.
 
