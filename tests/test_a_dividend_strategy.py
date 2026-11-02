@@ -335,6 +335,39 @@ class ADividendStrategyTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "20261030"):
                 module.fetch_current_constituents(Client(), "20261030", Path(tmp))
 
+    def test_csi_constituents_reuse_valid_archive_retry_and_reject_tampering(self):
+        module = load_module()
+        class Client:
+            def trade_cal(self, **kwargs):
+                return pd.DataFrame([{"cal_date": d} for d in ("20261029", "20261030")])
+        class Response:
+            content = b"source"
+            def raise_for_status(self):
+                pass
+        frame = pd.DataFrame([{"日期Date": "20261030", "指数代码 Index Code": "000300", "成份券代码Constituent Code": "600036", "交易所Exchange": "上海证券交易所"}])
+        timeout = module.requests.exceptions.ReadTimeout("slow")
+        with tempfile.TemporaryDirectory() as tmp, patch.object(module.pd, "read_excel", return_value=frame), \
+                patch.object(module, "EXPECTED_CONSTITUENT_COUNT", 1), patch.object(module.time, "sleep") as sleep:
+            market = Path(tmp)
+            with patch.object(module.requests, "get", side_effect=[timeout, Response()]) as get:
+                module.fetch_current_constituents(Client(), "20261101", market)
+            self.assertEqual(get.call_count, 2)
+            sleep.assert_called_once()
+
+            with patch.object(module.requests, "get", side_effect=AssertionError("must not download")):
+                result = module.fetch_current_constituents(Client(), "20261101", market)
+            self.assertEqual(result.iloc[0]["trade_date"], "20261030")
+
+            (market / "csi_constituents_source.xls").write_bytes(b"tampered")
+            with patch.object(module.requests, "get", return_value=Response()) as get:
+                module.fetch_current_constituents(Client(), "20261101", market)
+            get.assert_called_once()
+            self.assertEqual((market / "csi_constituents_source.xls").read_bytes(), b"source")
+
+            with patch.object(module.requests, "get", side_effect=timeout), self.assertRaisesRegex(RuntimeError, "已重试3次"):
+                (market / "csi_constituents_source.json").unlink()
+                module.fetch_current_constituents(Client(), "20261101", market)
+
     def test_fetch_market_data_uses_hs300_index_and_writes_required_files(self):
         module = load_module()
 

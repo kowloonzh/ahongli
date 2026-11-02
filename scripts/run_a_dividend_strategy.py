@@ -331,6 +331,48 @@ def tushare_pro():
     return ts.pro_api(token)
 
 
+CSI_DOWNLOAD_ATTEMPTS = 3
+CSI_DOWNLOAD_TIMEOUT_SECONDS = 30
+
+
+def _archived_csi_source(market: Path, valid_dates: list[str]) -> bytes | None:
+    """Return the archived CSI file when its hash and snapshot date still qualify.
+
+    The live CSI URL only serves the latest snapshot, so a rerun for an earlier
+    run date can be substantiated only by the file archived at that time.
+    """
+    source_file = market / "csi_constituents_source.xls"
+    meta_file = market / "csi_constituents_source.json"
+    if not source_file.exists() or not meta_file.exists():
+        return None
+    try:
+        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    raw = source_file.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != meta.get("sha256"):
+        return None
+    if str(meta.get("snapshot_date") or "") not in valid_dates:
+        return None
+    return raw
+
+
+def _download_csi_source() -> bytes:
+    last_error: Exception | None = None
+    for attempt in range(1, CSI_DOWNLOAD_ATTEMPTS + 1):
+        try:
+            response = requests.get(CSI_CONSTITUENTS_URL, timeout=CSI_DOWNLOAD_TIMEOUT_SECONDS)
+            response.raise_for_status()
+            return response.content
+        except requests.RequestException as error:
+            last_error = error
+            if attempt < CSI_DOWNLOAD_ATTEMPTS:
+                delay = 2 ** attempt
+                print(f"中证成分股文件下载失败（第{attempt}次：{type(error).__name__}），{delay}秒后重试", flush=True)
+                time.sleep(delay)
+    raise RuntimeError(f"中证成分股文件下载失败，已重试{CSI_DOWNLOAD_ATTEMPTS}次：{last_error}") from last_error
+
+
 def fetch_current_constituents(client, run_date: str, market: Path) -> pd.DataFrame:
     end = compact_date(run_date)
     start = (datetime.strptime(end, "%Y%m%d") - timedelta(days=30)).strftime("%Y%m%d")
@@ -339,9 +381,10 @@ def fetch_current_constituents(client, run_date: str, market: Path) -> pd.DataFr
         raise RuntimeError("无法确认运行日最近交易日，不能验证成分股日期")
     trading_dates = sorted(set(calendar["cal_date"].dropna().astype(str)))
     expected_date = trading_dates[-1]
-    response = requests.get(CSI_CONSTITUENTS_URL, timeout=30)
-    response.raise_for_status()
-    raw = response.content
+    raw = _archived_csi_source(market, trading_dates[-2:])
+    reused = raw is not None
+    if raw is None:
+        raw = _download_csi_source()
     frame = pd.read_excel(io.BytesIO(raw), dtype=str)
     date_col, index_col = "日期Date", "指数代码 Index Code"
     code_col, exchange_col = "成份券代码Constituent Code", "交易所Exchange"
@@ -364,6 +407,9 @@ def fetch_current_constituents(client, run_date: str, market: Path) -> pd.DataFr
     codes = frame[code_col].astype(str).str.zfill(6) + "." + exchange
     if len(codes) != EXPECTED_CONSTITUENT_COUNT or codes.nunique() != EXPECTED_CONSTITUENT_COUNT:
         raise RuntimeError("中证成分股文件数量或唯一性校验失败")
+    if reused:
+        print(f"复用已存档中证成分股文件（名单日期{snapshot_date}，SHA-256校验通过）", flush=True)
+        return pd.DataFrame({"con_code": codes, "trade_date": snapshot_date, "index_code": INDEX_CODE})
     (market / "csi_constituents_source.xls").write_bytes(raw)
     (market / "csi_constituents_source.json").write_text(json.dumps({"url": CSI_CONSTITUENTS_URL, "snapshot_date": snapshot_date, "latest_trade_date": expected_date, "lag_trading_days": lag, "warning": warning, "sha256": hashlib.sha256(raw).hexdigest(), "rows": len(codes)}, ensure_ascii=False, indent=2), encoding="utf-8")
     return pd.DataFrame({"con_code": codes, "trade_date": snapshot_date, "index_code": INDEX_CODE})

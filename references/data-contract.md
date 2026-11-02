@@ -3,7 +3,7 @@
 ## Tushare fields
 
 - `index_weight`: latest monthly `000300.SH` weights; `weight_trade_date` records their date and new constituents have empty weights.
-- CSI official `000300cons.xls`: complete run-date membership, validated against the latest or preceding SSE trading day, with any one-day lag and unverified same-day adjustments disclosed, and archived with URL and SHA-256. This live file is not a historical source; reject a different date.
+- CSI official `000300cons.xls`: complete run-date membership, validated against the latest or preceding SSE trading day, with any one-day lag and unverified same-day adjustments disclosed, and archived with URL and SHA-256. This live file is not a historical source; reject a different date. A run-date archive whose hash matches and whose snapshot date still qualifies is reused instead of downloading again.
 - `stock_basic`: name, industry, listing metadata, and explicit industry classification.
 - `stock_company`: `main_business`, `business_scope`, and `introduction` for every constituent.
 - `daily`, `daily_basic.dv_ttm`: display prices and five-year yield history.
