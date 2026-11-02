@@ -1522,7 +1522,7 @@ class ADividendStrategyTest(unittest.TestCase):
 
         self.assertEqual([row["ts_code"] for row in top], ["C", "A"])
 
-    def test_top10_caps_banks_at_three_other_industries_at_five(self):
+    def test_top10_caps_every_industry_at_five(self):
         module = load_module()
         rows = [
             {"ts_code": f"B{index}", "industry": "银行", "selected": "是", "dividend_score_total": 100 - index}
@@ -1539,7 +1539,7 @@ class ADividendStrategyTest(unittest.TestCase):
 
         self.assertEqual(
             [row["ts_code"] for row in top],
-            ["B0", "B1", "B2", "P0", "P1", "P2", "P3", "P4", "O0", "O1"],
+            ["B0", "B1", "B2", "B3", "B4", "P0", "P1", "P2", "P3", "P4"],
         )
 
     def test_candidate_rows_mark_industry_capped_rows_and_keep_score_rank(self):
@@ -1548,7 +1548,7 @@ class ADividendStrategyTest(unittest.TestCase):
             market = Path(tmp)
             constituents = [
                 {"ts_code": f"60000{index}.SH", "name": f"银{index}", "industry": "银行"}
-                for index in range(6)
+                for index in range(8)
             ] + [{"ts_code": "600100.SH", "name": "电", "industry": "电力"}]
             pd.DataFrame(constituents).to_csv(market / "constituents.csv", index=False)
             structured = {
@@ -1575,16 +1575,16 @@ class ADividendStrategyTest(unittest.TestCase):
         self.assertEqual(capped["selection_status"], "concentration_capped")
         self.assertEqual(capped["selected"], "否")
         self.assertIn("行业上限", capped["selected_reason"])
-        self.assertIn("银行已有3家", capped["selected_reason"])
+        self.assertIn("银行已有5家", capped["selected_reason"])
         self.assertEqual(capped["rank"], 6)
         self.assertEqual(capped["top10_rank"], "")
-        self.assertEqual(by_code["600100.SH"]["rank"], 7)
+        self.assertEqual(by_code["600100.SH"]["rank"], 9)
         # The promoted company takes the next Top10 position; rank stays full-universe.
-        self.assertEqual(by_code["600100.SH"]["top10_rank"], 4)
-        self.assertEqual(by_code["600002.SH"]["top10_rank"], 3)
+        self.assertEqual(by_code["600100.SH"]["top10_rank"], 6)
+        self.assertEqual(by_code["600004.SH"]["top10_rank"], 5)
         self.assertEqual(
             [row["ts_code"] for row in module.formal_top_candidates(rows)],
-            ["600000.SH", "600001.SH", "600002.SH", "600100.SH"],
+            [*(f"60000{index}.SH" for index in range(5)), "600100.SH"],
         )
 
     def test_structured_factor_record_calculates_all_nonfinancial_gates_and_scores(self):

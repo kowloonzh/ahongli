@@ -77,7 +77,7 @@ There is no company-quality category gate.
 
 ## Top10 Portfolio Constraint
 
-Fill the formal Top10 by total score descending, but admit at most three banks and at most five companies of any other `stock_basic.industry`. A company skipped by this cap keeps its score and full-universe `rank`, is marked `concentration_capped` with an industry-cap reason, and the next eligible company fills the slot. `top10_rank` is the position inside the formal Top10 (1–10, no gaps); reports and the forward table show it as 排名, with the full-universe rank kept for audit. The cap changes only Top10 membership, never scores or hard gates.
+Fill the formal Top10 by total score descending, but admit at most five companies with the same `stock_basic.industry` (banks included; a three-bank cap was backtested on 2026-11-02 and rejected because it only left slots empty). A company skipped by this cap keeps its score and full-universe `rank`, is marked `concentration_capped` with an industry-cap reason, and the next eligible company fills the slot. `top10_rank` is the position inside the formal Top10 (1–10, no gaps); reports and the forward table show it as 排名, with the full-universe rank kept for audit. The cap changes only Top10 membership, never scores or hard gates.
  Missing mandatory structured evidence is `data_gap`, not zero and not a hard-gate failure. Do not create a formal ranking while a required factor remains a data gap.
 
 ## Scoring

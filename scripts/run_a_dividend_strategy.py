@@ -41,8 +41,6 @@ DIVIDEND_YIELD_ENTRY_RATIO = 0.80
 DIVIDEND_YIELD_RETENTION_RATIO = 0.75
 MIN_PROFIT_DEDT_THREE_YEAR_CHANGE = -0.10
 MAX_TOP_CANDIDATES_PER_INDUSTRY = 5
-# Banks share one macro and rate cycle, so they get a tighter cap (2026-11-02).
-MAX_TOP_BANKS = 3
 RULE_VERSIONS = ("v1", "v2")
 # Formal default since 2026-11-02: rule v2 with the nonfinancial cross-cycle
 # gate (docs/scoring-v2-backtest-comparison.md). v1 stays selectable.
@@ -1532,7 +1530,9 @@ def portfolio_scope_gate_profile(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def industry_cap(industry: str) -> int:
-    return MAX_TOP_BANKS if is_bank_industry(industry) else MAX_TOP_CANDIDATES_PER_INDUSTRY
+    # One cap for every industry. A tighter bank cap (3) was tried on 2026-11-02 and
+    # dropped: in the 2016-2025 backtest it only left Top10 slots empty.
+    return MAX_TOP_CANDIDATES_PER_INDUSTRY
 
 
 def _industry_capped_top(
