@@ -1956,6 +1956,40 @@ def fetch_structured_source_frames(
     return frames
 
 
+STRUCTURED_FETCH_ATTEMPTS = 3
+STRUCTURED_FETCH_RETRY_BASE_SECONDS = 2.0
+
+
+def fetch_structured_source_frames_with_retry(
+    client,
+    ts_code: str,
+    run_date: str,
+    *,
+    include_candidate_details: bool,
+) -> dict[str, pd.DataFrame]:
+    """Retry transient interface failures so one timeout does not become a data gap."""
+    for attempt in range(1, STRUCTURED_FETCH_ATTEMPTS + 1):
+        try:
+            return fetch_structured_source_frames(
+                client,
+                ts_code,
+                run_date,
+                include_candidate_details=include_candidate_details,
+            )
+        except Exception as error:
+            if attempt == STRUCTURED_FETCH_ATTEMPTS:
+                raise RuntimeError(
+                    f"已重试{STRUCTURED_FETCH_ATTEMPTS}次：{error}"
+                ) from error
+            delay = STRUCTURED_FETCH_RETRY_BASE_SECONDS * 2 ** (attempt - 1)
+            print(
+                f"{ts_code} 结构化接口失败（第{attempt}次：{type(error).__name__}），{delay:g}秒后重试",
+                flush=True,
+            )
+            time.sleep(delay)
+    raise AssertionError("unreachable")
+
+
 def load_structured_factor_data(path: Path) -> dict[str, dict[str, Any]]:
     if not path.exists() or path.stat().st_size == 0:
         return {}
@@ -2038,7 +2072,7 @@ def ensure_structured_factor_data(
 
     def fetch_common(code: str) -> tuple[str, dict[str, pd.DataFrame] | Exception]:
         try:
-            frames = fetch_structured_source_frames(
+            frames = fetch_structured_source_frames_with_retry(
                 client,
                 code,
                 run_date,
@@ -2074,7 +2108,7 @@ def ensure_structured_factor_data(
 
     def fetch_detail(code: str) -> tuple[str, dict[str, pd.DataFrame] | Exception]:
         try:
-            frames = fetch_structured_source_frames(
+            frames = fetch_structured_source_frames_with_retry(
                 client,
                 code,
                 run_date,

@@ -44,7 +44,7 @@ Current price, current dividend yield, and the pass ratio may be displayed but n
 
 ### 3. Structured financial gates and scoring
 
-For market-preflight passers, fetch or reuse Tushare `dividend`, `income`, `fina_indicator`, `cashflow`, `balancesheet`, and `fina_audit` evidence. Obtain enough structured ROE inputs for all 300 companies to calculate the CSI 300 lowest-volatility 80% benchmark.
+For market-preflight passers, fetch or reuse Tushare `dividend`, `income`, `fina_indicator`, `cashflow`, `balancesheet`, and `fina_audit` evidence. Obtain enough structured ROE inputs for all 300 companies to calculate the CSI 300 lowest-volatility 80% benchmark. Retry each company's structured fetch up to three times with backoff; only a failure after all attempts becomes that company's `data_gap`, so one transient timeout must not silently remove a company from the ranking.
 
 Apply every structured hard gate, including direct-property exclusion from the cached company profile. Score complete passers directly; do not query disclosure periods, generate reports, or parse subjective company-quality labels.
 

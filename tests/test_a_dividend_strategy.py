@@ -1305,6 +1305,35 @@ class ADividendStrategyTest(unittest.TestCase):
         self.assertGreater(by_code["A"]["dividend_yield_cv_percentile"], by_code["B"]["dividend_yield_cv_percentile"])
         self.assertGreater(by_code["A"]["consecutive_dividend_years_percentile"], by_code["B"]["consecutive_dividend_years_percentile"])
 
+    def test_structured_fetch_retries_transient_failures_before_reporting_gap(self):
+        module = load_module()
+        calls = {"count": 0}
+
+        def flaky(*args, **kwargs):
+            calls["count"] += 1
+            if calls["count"] < 3:
+                raise TimeoutError("Read timed out")
+            return {"income": pd.DataFrame()}
+
+        with (
+            patch.object(module, "STRUCTURED_FETCH_RETRY_BASE_SECONDS", 0),
+            patch.object(module, "fetch_structured_source_frames", side_effect=flaky),
+        ):
+            frames = module.fetch_structured_source_frames_with_retry(
+                None, "600036.SH", "20261101", include_candidate_details=True
+            )
+        self.assertEqual(calls["count"], 3)
+        self.assertIn("income", frames)
+
+        with (
+            patch.object(module, "STRUCTURED_FETCH_RETRY_BASE_SECONDS", 0),
+            patch.object(module, "fetch_structured_source_frames", side_effect=TimeoutError("down")),
+            self.assertRaisesRegex(RuntimeError, "已重试3次"),
+        ):
+            module.fetch_structured_source_frames_with_retry(
+                None, "600036.SH", "20261101", include_candidate_details=False
+            )
+
     def test_dps_growth_uses_log_linear_regression_not_endpoints(self):
         module = load_module()
 
