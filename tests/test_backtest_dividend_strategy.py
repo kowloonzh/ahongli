@@ -22,7 +22,12 @@ def load_module():
     return module
 
 
-def dividend_rows(per_year: dict[int, float], *, paid_month: str = "0715") -> pd.DataFrame:
+def dividend_rows(
+    per_year: dict[int, float],
+    *,
+    paid_month: str = "0715",
+    shares: dict[int, float] | None = None,
+) -> pd.DataFrame:
     rows = []
     for year, dps in per_year.items():
         date = f"{year + 1}{paid_month}"
@@ -38,7 +43,7 @@ def dividend_rows(per_year: dict[int, float], *, paid_month: str = "0715") -> pd
                 "ex_date": date,
                 "pay_date": date,
                 "imp_ann_date": date,
-                "base_share": 1000.0,
+                "base_share": (shares or {}).get(year, 1000.0),
             }
         )
     return pd.DataFrame(rows)
@@ -174,6 +179,17 @@ class BacktestDividendStrategyTest(unittest.TestCase):
         self.assertEqual(stopped["cut_years"], "2016,2017")
         self.assertEqual(stopped["dps_growth_3y"], -1.0)
         self.assertFalse(boundary["cut"])
+
+    def test_dilution_with_maintained_total_is_not_a_cut(self):
+        module = load_module()
+        diluted = dividend_rows({2023: 0.38, 2024: 0.38, 2025: 0.325}, shares={2025: 1170.0})
+        shrunk = dividend_rows({2023: 0.38, 2024: 0.38, 2025: 0.325}, shares={2025: 1100.0})
+
+        maintained = module.dividend_outcome(diluted, 2024, "20261102")
+        reduced = module.dividend_outcome(shrunk, 2024, "20261102")
+
+        self.assertFalse(maintained["cut"])
+        self.assertTrue(reduced["cut"])
 
     def test_dividend_outcome_skips_incomplete_windows_and_delisted(self):
         module = load_module()

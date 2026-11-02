@@ -404,12 +404,40 @@ def last_complete_fiscal_year(asof: str) -> int:
     return year - 1 if month >= 9 else year - 2
 
 
-def _comparable_dps(dividends: pd.DataFrame, evaluation_date: str) -> dict[int, float]:
+def _dividend_history(dividends: pd.DataFrame, evaluation_date: str) -> tuple[dict[int, float], dict[int, float]]:
+    """Comparable fiscal-year DPS and total cash dividends implemented by ``evaluation_date``."""
     profile = strategy.dividend_history_profile(dividends, evaluation_date)
     # No dividend in the two years before the evaluation date leaves no anchor
     # for share-count adjustment; the raw history still shows the stop.
     values = profile.get("annual_comparable_dps") or profile.get("annual_raw_dps") or {}
-    return {int(year): float(value) for year, value in values.items()}
+    totals = profile.get("annual_cash_dividend_total_yuan") or {}
+    return (
+        {int(year): float(value) for year, value in values.items()},
+        {int(year): float(value) for year, value in totals.items()},
+    )
+
+
+def _comparable_dps(dividends: pd.DataFrame, evaluation_date: str) -> dict[int, float]:
+    return _dividend_history(dividends, evaluation_date)[0]
+
+
+def is_dividend_cut(year: int, dps: dict[int, float], totals: dict[int, float]) -> bool:
+    """A year with no cash dividend, or both DPS and total cash below the cut ratio.
+
+    Requiring the total to fall as well keeps a share issue (for example the
+    2025 Ministry of Finance recapitalization of large banks) that dilutes DPS
+    while the payout is maintained from counting as a cut. Without both totals
+    the per-share test alone decides.
+    """
+    current, prior = dps.get(year, 0.0), dps.get(year - 1, 0.0)
+    if current <= 0:
+        return True
+    if prior <= 0 or current >= DIVIDEND_CUT_RATIO * prior:
+        return False
+    total, prior_total = totals.get(year), totals.get(year - 1)
+    if total is not None and prior_total is not None and prior_total > 0:
+        return total < DIVIDEND_CUT_RATIO * prior_total
+    return True
 
 
 def delisted_by(basic_row: dict[str, Any] | None, date: str) -> str:
@@ -429,9 +457,10 @@ def dividend_outcome(
 ) -> dict[str, Any]:
     """Cuts in the next ``CUT_HORIZON_YEARS`` fiscal years and three-year DPS growth.
 
-    A cut is a fiscal-year comparable DPS below ``DIVIDEND_CUT_RATIO`` of the
-    prior year; a year without any cash dividend is a cut. Only fiscal years
-    complete by ``asof`` are evaluated.
+    A cut is a fiscal year whose comparable DPS and total cash dividend are both
+    below ``DIVIDEND_CUT_RATIO`` of the prior year, or a year without any cash
+    dividend (see ``is_dividend_cut``). Only fiscal years complete by ``asof``
+    are evaluated.
     """
     last_complete = last_complete_fiscal_year(asof)
     result: dict[str, Any] = {
@@ -450,13 +479,8 @@ def dividend_outcome(
     cut_years = [anchor_year + offset for offset in range(1, CUT_HORIZON_YEARS + 1) if anchor_year + offset <= last_complete]
     if cut_years:
         evaluation = min(asof, f"{cut_years[-1] + 1}1231")
-        dps = _comparable_dps(dividends, evaluation)
-        cuts = [
-            year
-            for year in cut_years
-            if dps.get(year, 0.0) <= 0
-            or (dps.get(year - 1, 0.0) > 0 and dps[year] < DIVIDEND_CUT_RATIO * dps[year - 1])
-        ]
+        dps, totals = _dividend_history(dividends, evaluation)
+        cuts = [year for year in cut_years if is_dividend_cut(year, dps, totals)]
         result["cut_years_evaluated"] = len(cut_years)
         result["cut"] = bool(cuts)
         result["cut_years"] = ",".join(str(year) for year in cuts)
@@ -759,7 +783,7 @@ def write_report(path: Path, manifest: dict[str, Any], summary: pd.DataFrame, ou
         "",
         "| 指标 | 数值 |",
         "|---|---:|",
-        f"| 分红削减率（之后{CUT_HORIZON_YEARS}个财年内，DPS 低于上年{DIVIDEND_CUT_RATIO:.0%}） | {_pct(aggregate['cut_rate'])}（{aggregate['cut_count']} / {aggregate['cut_evaluable']}） |",
+        f"| 分红削减率（之后{CUT_HORIZON_YEARS}个财年内，每股分红与分红总额均低于上年{DIVIDEND_CUT_RATIO:.0%}，或当年未分红） | {_pct(aggregate['cut_rate'])}（{aggregate['cut_count']} / {aggregate['cut_evaluable']}） |",
         f"| 3 年实际 DPS 增速中位数 | {_pct(aggregate['dps_growth_3y_median'])}（{aggregate['dps_growth_3y_observations']} 个样本） |",
         f"| 持有期内退市 | {aggregate['delisted_holdings']} |",
         f"| 平均年换手率 | {_pct(aggregate['mean_turnover'], 0)} |",
