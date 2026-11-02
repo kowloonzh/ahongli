@@ -169,7 +169,7 @@ python3 scripts/run_forward_dividend_analysis.py \
 - `market_data/forward-dividend-sources.csv`、`forward-dividend-facts.csv`、`forward-dividend-events.csv`和`forward-dividend-results.csv`；
 - `market_data/forward_dividend_evidence/{ts_code}/`下的manifest、页级事实、事件和详情页。
 
-预测状态区分 `announced`、`modelled`、`data_gap`、`unsupported` 和 `failed`。证据不足时数值保持为空。目标股息率按“要求总回报率减可持续分红增长率”计算；目标价格、模型输入、DPS三情景和证据状态保留在CSV与详情页。
+预测状态区分 `announced`、`modelled`、`data_gap`、`unsupported` 和 `failed`。证据不足时数值保持为空。CNinfo 实体映射优先使用技能内置表，缺失时自动回退到巨潮公开A股列表，并按运行日期存档；没有正式派息下限的公司，回退为三年原始证据派息率中位数，不确定性标记为高。目标股息率按“要求总回报率减可持续分红增长率”计算；目标价格、模型输入、DPS三情景和证据状态保留在CSV与详情页。
 
 AHongli只使用A股口径：证券代码为 `.SH` / `.SZ`，股价和DPS均为人民币。H股或港元股息不会混入A股前瞻DPS；证据无法转换为明确A股人民币口径时保留 `data_gap`。
 

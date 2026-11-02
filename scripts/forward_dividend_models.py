@@ -282,11 +282,17 @@ def forecast_company(
                 if is_bank and facts.get("payout_method") == "historical_payout"
                 else "bank_profit_policy_capital_v1"
                 if is_bank
+                else "regular_historical_payout_v1"
+                if facts.get("payout_method") == "historical_payout"
                 else "regular_profit_policy_v1"
             ),
             "model_version": "1",
             "evidence_completeness": facts.get("evidence_completeness", "complete"),
-            "forecast_uncertainty": "medium",
+            "forecast_uncertainty": (
+                "high"
+                if not is_bank and facts.get("payout_method") == "historical_payout"
+                else "medium"
+            ),
             "forecast_status": "modelled",
             "forecast_reason": (
                 "正式派息下限作为低情景、三年实际派息率作为基准情景并检查资本约束"
@@ -294,6 +300,8 @@ def forecast_company(
                 else
                 "三年原始证据派息率中位数、可复算利润情景与资本约束"
                 if is_bank and facts.get("payout_method") == "historical_payout"
+                else "无正式派息下限，采用三年原始证据派息率中位数与可复算利润情景"
+                if facts.get("payout_method") == "historical_payout"
                 else "正式派息政策与可复算利润情景"
             ),
             "forecast_profit": facts["forecast_profit_scenarios"]["base"],

@@ -347,7 +347,7 @@ def _model_facts(
             input_fact_ids.append(str(policy["fact_id"]))
     is_bank = _truthy((company or {}).get("is_bank")) or "银行" in str((company or {}).get("industry") or "")
     is_insurance = "保险" in str((company or {}).get("industry") or "")
-    if is_bank or is_insurance:
+    if is_bank or is_insurance or "official_payout_ratio" not in result:
         selected_periods, latest_values, payout_fact_ids, payout_event_ids, payout_decisions = _historical_payout_profile(
             evidence,
             profit_fact_type="operating_profit_parent" if is_insurance else "net_profit_parent",
@@ -356,6 +356,8 @@ def _model_facts(
         if len(latest_values) == 3:
             historical_median = statistics.median(latest_values)
             if "official_payout_ratio" not in result:
+                # Without a formal payout floor, every industry falls back to
+                # the three-year evidenced payout median (high uncertainty).
                 result["official_payout_ratio"] = historical_median
                 result["payout_method"] = "historical_payout"
             elif is_bank and historical_median > float(result["official_payout_ratio"]):
@@ -397,7 +399,8 @@ def forecast_selected_dividends(
     for row in selected:
         code = str(row["ts_code"])
         evidence = evidence_by_code.get(code, {})
-        if evidence.get("stage_status") == "failed":
+        if evidence.get("stage_status") in {"failed", "data_gap"}:
+            stage_status = str(evidence["stage_status"])
             forecast = {
                 "forecast_fiscal_year": int(str(run_date)[:4]),
                 "forecast_fy_regular_dps_low": None,
@@ -408,8 +411,11 @@ def forecast_selected_dividends(
                 "model_version": "",
                 "evidence_completeness": "missing",
                 "forecast_uncertainty": "not_estimable",
-                "forecast_status": "failed",
-                "forecast_reason": str(evidence.get("stage_reason") or "前瞻证据准备或解析失败"),
+                "forecast_status": stage_status,
+                "forecast_reason": str(
+                    evidence.get("stage_reason")
+                    or ("前瞻原始证据不足" if stage_status == "data_gap" else "前瞻证据准备或解析失败")
+                ),
                 "forecast_input_fact_ids": [],
                 "forecast_input_event_ids": [],
             }

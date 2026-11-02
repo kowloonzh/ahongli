@@ -157,6 +157,58 @@ class ForwardDividendEvidenceTest(unittest.TestCase):
 
         self.assertEqual(resolved, expected)
 
+    def test_unmapped_code_resolves_from_cached_cninfo_stock_list(self):
+        module = load_script("cninfo_client")
+        stock_list = {
+            "stockList": [
+                {"code": f"{index:06d}", "pinyin": "x", "category": "A股", "orgId": f"gssz{index:07d}", "zwjc": f"公司{index}"}
+                for index in range(1, 1201)
+            ]
+            + [
+                {"code": "601857", "pinyin": "zgsy", "category": "A股", "orgId": "9900003825", "zwjc": "中国石油"},
+                {"code": "600741", "pinyin": "hyqc", "category": "A股", "orgId": "bad id!", "zwjc": "华域汽车"},
+                {"code": "900901", "pinyin": "b", "category": "B股", "orgId": "gssh0900901", "zwjc": "B股"},
+            ]
+        }
+        downloads = []
+
+        def download():
+            downloads.append(1)
+            return json.dumps(stock_list, ensure_ascii=False).encode("utf-8")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "market_data" / "cninfo_stock_list.json"
+            client = module.CnInfoClient(
+                stocks={"szse": {"600900": {"orgId": "gssh0600900", "zwjc": "长江电力"}}},
+                stock_list_loader=module.cached_cninfo_stock_list_loader(cache, download=download),
+            )
+            static = client.resolve_stock("600900.SH")
+            self.assertEqual(downloads, [])
+            resolved = client.resolve_stock("601857.SH")
+            self.assertIsNone(client.resolve_stock("600741.SH"))
+            self.assertIsNone(client.resolve_stock("900901"))
+            self.assertIsNone(client.resolve_stock("999999.SH"))
+            self.assertTrue(cache.exists())
+            reused = module.CnInfoClient(
+                stocks={},
+                stock_list_loader=module.cached_cninfo_stock_list_loader(cache, download=download),
+            ).resolve_stock("601857.SH")
+
+        self.assertEqual(static["orgId"], "gssh0600900")
+        self.assertNotIn("mapping_source", static)
+        self.assertEqual(resolved["orgId"], "9900003825")
+        self.assertEqual(resolved["market"], "szse")
+        self.assertEqual(resolved["mapping_source"], "cninfo_stock_list")
+        self.assertEqual(reused["orgId"], "9900003825")
+        self.assertEqual(downloads, [1])
+
+    def test_cninfo_stock_list_rejects_truncated_payload(self):
+        module = load_script("cninfo_client")
+        with self.assertRaises(ValueError):
+            module.parse_cninfo_stock_list({"stockList": [{"code": "601857", "category": "A股", "orgId": "9900003825"}]})
+        with self.assertRaises(ValueError):
+            module.parse_cninfo_stock_list({"error": "blocked"})
+
     def test_cninfo_query_paginates_with_resolved_org_id(self):
         module = load_script("cninfo_client")
         client = module.CnInfoClient(

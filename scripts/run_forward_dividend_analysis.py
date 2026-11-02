@@ -13,13 +13,15 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from cninfo_client import CnInfoClient, load_stock_maps
+from cninfo_client import CnInfoClient, cached_cninfo_stock_list_loader, load_stock_maps
 from forecast_selected_dividends import forecast_selected_dividends
 from forward_dividend_models import load_target_yield_policy
 from forward_replay import build_replay_manifest
 from parse_forward_dividend_evidence import parse_company_evidence
 from prepare_forward_dividend_evidence import prepare_forward_evidence
 from render_forward_dividend_outputs import format_next_dividend_payment, render_forward_dividend_outputs
+
+CNINFO_STOCK_LIST_FILENAME = "cninfo_stock_list.json"
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
@@ -160,7 +162,10 @@ def run_forward_analysis(
                     stocks=load_stock_maps(
                         SKILL_ROOT / "assets" / "stocks.json",
                         SKILL_ROOT / "assets" / "forward_stocks.json",
-                    )
+                    ),
+                    stock_list_loader=cached_cninfo_stock_list_loader(
+                        market_dir / CNINFO_STOCK_LIST_FILENAME
+                    ),
                 )
             if download_bytes is None:
                 download_bytes = client.download_bytes

@@ -56,9 +56,91 @@ def load_stock_maps(*paths: Path) -> dict[str, dict[str, dict[str, Any]]]:
     return combined
 
 
+CNINFO_STOCK_LIST_URL = "https://www.cninfo.com.cn/new/data/szse_stock.json"
+CNINFO_STOCK_LIST_MARKET = "szse"
+MIN_CNINFO_STOCK_LIST_ENTRIES = 1000
+_ORG_ID_PATTERN = re.compile(r"[0-9A-Za-z]{6,20}")
+_STOCK_CODE_PATTERN = re.compile(r"\d{6}")
+
+
+def parse_cninfo_stock_list(payload: Any) -> dict[str, dict[str, Any]]:
+    """Validate CNinfo's public A-share list and index A-share entries by code."""
+    entries = payload.get("stockList") if isinstance(payload, dict) else None
+    if not isinstance(entries, list) or len(entries) < MIN_CNINFO_STOCK_LIST_ENTRIES:
+        raise ValueError("CNinfo股票列表格式无效或条目过少")
+    indexed: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        code = str(entry.get("code") or "")
+        org_id = str(entry.get("orgId") or "")
+        if entry.get("category") != "A股":
+            continue
+        if not _STOCK_CODE_PATTERN.fullmatch(code) or not _ORG_ID_PATTERN.fullmatch(org_id):
+            continue
+        indexed[code] = {
+            "code": code,
+            "pinyin": str(entry.get("pinyin") or ""),
+            "category": "A股",
+            "orgId": org_id,
+            "zwjc": str(entry.get("zwjc") or ""),
+        }
+    if len(indexed) < MIN_CNINFO_STOCK_LIST_ENTRIES:
+        raise ValueError("CNinfo股票列表有效A股条目过少")
+    return indexed
+
+
+def download_cninfo_stock_list() -> bytes:
+    if httpx is None:
+        raise RuntimeError("httpx is required for CNinfo downloads")
+
+    def request() -> bytes:
+        response = httpx.get(
+            CNINFO_STOCK_LIST_URL,
+            headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"},
+            timeout=60.0,
+        )
+        response.raise_for_status()
+        return response.content
+
+    return _with_transient_retry(request)
+
+
+def cached_cninfo_stock_list_loader(
+    cache_path: Path,
+    *,
+    download: Callable[[], bytes] = download_cninfo_stock_list,
+) -> Callable[[], dict[str, dict[str, Any]]]:
+    """Reuse the run's archived CNinfo list, otherwise download and archive it once."""
+    cache_path = Path(cache_path)
+
+    def load() -> dict[str, dict[str, Any]]:
+        if cache_path.exists():
+            try:
+                return parse_cninfo_stock_list(json.loads(cache_path.read_text(encoding="utf-8")))
+            except (ValueError, json.JSONDecodeError):
+                pass
+        raw = download()
+        indexed = parse_cninfo_stock_list(json.loads(raw.decode("utf-8")))
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = cache_path.with_suffix(cache_path.suffix + ".tmp")
+        temporary.write_bytes(raw)
+        temporary.replace(cache_path)
+        return indexed
+
+    return load
+
+
 class CnInfoClient:
-    def __init__(self, *, stocks: dict[str, dict[str, dict[str, Any]]]):
+    def __init__(
+        self,
+        *,
+        stocks: dict[str, dict[str, dict[str, Any]]],
+        stock_list_loader: Callable[[], dict[str, dict[str, Any]]] | None = None,
+    ):
         self.stocks = stocks
+        self._stock_list_loader = stock_list_loader
+        self._stock_list: dict[str, dict[str, Any]] | None = None
 
     def resolve_stock(self, stock_input: str) -> dict[str, Any] | None:
         needle = str(stock_input).split(".", 1)[0]
@@ -68,7 +150,19 @@ class CnInfoClient:
             for code, info in entries.items():
                 if info.get("zwjc") == stock_input:
                     return {"stock_code": code, "market": market, **info}
-        return None
+        if self._stock_list_loader is None or not _STOCK_CODE_PATTERN.fullmatch(needle):
+            return None
+        if self._stock_list is None:
+            self._stock_list = self._stock_list_loader()
+        entry = self._stock_list.get(needle)
+        if entry is None:
+            return None
+        return {
+            "stock_code": needle,
+            "market": CNINFO_STOCK_LIST_MARKET,
+            **entry,
+            "mapping_source": "cninfo_stock_list",
+        }
 
     def build_page_fetcher(self) -> Callable[[dict[str, Any]], dict[str, Any]]:
         if httpx is None:

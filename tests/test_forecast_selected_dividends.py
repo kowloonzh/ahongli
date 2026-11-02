@@ -331,6 +331,59 @@ class ForecastSelectedDividendsTest(unittest.TestCase):
         self.assertIsNone(result[0]["forecast_fy_regular_dps_base"])
         self.assertIn("证据", result[0]["forecast_reason"])
 
+    def test_evidence_stage_data_gap_is_reported_as_data_gap_not_unsupported(self):
+        module = load_module()
+        top = [{
+            "rank": 2, "ts_code": "601857.SH", "name": "中国石油",
+            "industry": "石油开采", "selected": "是", "dividend_score_total": 73.12,
+        }]
+
+        result = module.forecast_selected_dividends(
+            top_rows=top,
+            evidence_by_code={"601857.SH": {"stage_status": "data_gap", "stage_reason": "CNinfo实体映射缺失"}},
+            run_date="20261101",
+        )
+
+        self.assertEqual(result[0]["forecast_status"], "data_gap")
+        self.assertEqual(result[0]["forecast_reason"], "CNinfo实体映射缺失")
+        self.assertIsNone(result[0]["forecast_fy_regular_dps_base"])
+
+    def test_nonfinancial_without_policy_uses_three_year_evidenced_payout_median(self):
+        module = load_module()
+        top = [{
+            "rank": 10, "ts_code": "600741.SH", "name": "华域汽车",
+            "industry": "汽车配件", "selected": "是", "dividend_score_total": 59.58,
+            "current_price": 16.08, "price_date": "20261030",
+        }]
+        evidence = {
+            "600741.SH": {
+                "normalized_facts": [
+                    {"fact_id": "FY", "fact_type": "net_profit_parent", "period": "20251231", "value": 7_000_000_000.0},
+                    {"fact_id": "CUR", "fact_type": "net_profit_parent", "period": "20260630", "value": 3_600_000_000.0},
+                    {"fact_id": "PRIOR", "fact_type": "net_profit_parent_prior_comparable", "period": "20250630", "value": 3_400_000_000.0},
+                    {"fact_id": "SHARES", "fact_type": "total_shares", "period": "20251231", "value": 3_152_723_984},
+                    {"fact_id": "P23", "fact_type": "historical_payout_ratio", "period": "20231231", "value": 0.33},
+                    {"fact_id": "P24", "fact_type": "historical_payout_ratio", "period": "20241231", "value": 0.38},
+                    {"fact_id": "P25", "fact_type": "historical_payout_ratio", "period": "20251231", "value": 0.44},
+                ],
+                "dividend_events": [],
+            }
+        }
+
+        result = module.forecast_selected_dividends(
+            top_rows=top, evidence_by_code=evidence, run_date="20261101"
+        )
+
+        self.assertEqual(result[0]["forecast_status"], "modelled")
+        self.assertEqual(result[0]["forecast_method"], "historical_payout")
+        self.assertEqual(result[0]["model_id"], "regular_historical_payout_v1")
+        self.assertEqual(result[0]["forecast_uncertainty"], "high")
+        self.assertAlmostEqual(result[0]["forecast_payout_ratio"], 0.38)
+        self.assertAlmostEqual(
+            result[0]["forecast_fy_regular_dps_base"], 7_200_000_000.0 * 0.38 / 3_152_723_984
+        )
+        self.assertIn("无正式派息下限", result[0]["forecast_reason"])
+
     def test_company_evidence_failure_is_reported_as_failed_not_data_gap(self):
         module = load_module()
         top = [{

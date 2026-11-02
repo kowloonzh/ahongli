@@ -56,7 +56,7 @@ When the cache is missing or incomplete, the runner prepares it automatically fr
 
 The optional forward stage consumes only the already-written formal Top10 and writes independent `hs300-dividend-forward-*` outputs. It must preserve the formal Top10 SHA-256 and mtime for the whole transaction.
 
-Forward numeric columns are numeric or empty; status text never replaces missing numbers. Per-company status is one of `announced`, `modelled`, `data_gap`, `unsupported`, or `failed`. Evidence completeness and forecast uncertainty are separate fields.
+Forward numeric columns are numeric or empty; status text never replaces missing numbers. Per-company status is one of `announced`, `modelled`, `data_gap`, `unsupported`, or `failed`. `unsupported` means evidence exists but no model applies; an evidence stage that ended in `data_gap` is reported as `data_gap`. A CNinfo `orgId` resolved from the public stock list is archived in `market_data/cninfo_stock_list.json`. Evidence completeness and forecast uncertainty are separate fields.
 
 Every non-empty forecast must reference original source documents, page evidence, normalized facts, dividend events, a model ID/version, and explicit assumptions. Target-yield outputs must retain the dated risk-free rate, risk-spread range, sustainable-growth input, model ID/version, and mechanically derived target-price range. Historical yield percentiles are not part of the forward-output contract.
 
