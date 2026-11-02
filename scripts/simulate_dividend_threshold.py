@@ -45,9 +45,7 @@ def simulation_output_dir(
 
 
 def yield_threshold_profile(frame: pd.DataFrame, threshold: float) -> dict[str, Any]:
-    observations = frame.drop_duplicates("trade_date", keep="last") if "trade_date" in frame.columns else frame
-    field = "dv_ttm" if "dv_ttm" in observations.columns else "dv_ratio"
-    series = pd.to_numeric(observations.get(field), errors="coerce").dropna()
+    observations, series = runner.daily_dividend_yield_series(frame)
     observation_days = len(observations)
     valid_days = len(series)
     return {
@@ -216,7 +214,7 @@ def run_simulation(
         passed[code] = bool(
             profile["valid_days"] >= runner.MIN_DIVIDEND_YIELD_VALID_DAYS
             and profile["coverage"] >= runner.MIN_DIVIDEND_YIELD_DATA_COVERAGE
-            and profile["threshold_ratio"] >= 0.80
+            and profile["threshold_ratio"] >= runner.DIVIDEND_YIELD_ENTRY_RATIO
         )
         structured[code]["market_preflight_passed"] = passed[code]
 

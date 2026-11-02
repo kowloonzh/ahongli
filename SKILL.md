@@ -31,11 +31,14 @@ Fetch the CSI official run-date `000300` constituent file and require exactly 30
 
 Fetch or reuse five-year `daily_basic.dv_ttm` data.
 
+A trading day is determined when `daily_basic.close` is present and positive. Tushare leaves `dv_ttm` blank when the trailing twelve months contain no cash dividend, so a blank `dv_ttm` on a determined day counts as 0%, not as missing; a day without a close stays undetermined. Never drop no-dividend periods from the denominator.
+
 Hard market preflight:
 
-- at least 1000 valid dividend-yield trading days;
-- valid-data coverage at least 80%;
-- `dv_ttm >= 3%` on at least 80% of valid days.
+- at least 1000 determined dividend-yield trading days;
+- determined-day coverage at least 80%;
+- `dv_ttm >= 3%` on at least 80% of determined days (entry line). The 3% is an absolute strategy choice and does not float with interest rates.
+- Hysteresis: a member of the previous formal Top10 is retained down to 75%. The previous Top10 is the latest `hs300-dividend-top10-YYYYMMDD.csv` under `{data_root}/a_dividend_outputs/YYYYMMDD/` dated strictly before `run_date`; record `prior_formal_top10_member`, `prior_formal_top10_source`, and `dividend_yield_required_ratio` per row. With no earlier formal Top10, every company uses the 80% entry line.
 
 Current price, current dividend yield, and the pass ratio may be displayed but never scored. Five-year yield CV is calculated here and scored later.
 
@@ -61,14 +64,19 @@ Hard gates do not contribute points:
 - three consecutive implemented cash-dividend fiscal years;
 - `10% <` three-year average annual payout ratio `< 100%` and `0% <` latest payout ratio `< 100%`;
 - twelve quarterly TTM ROE observations with standard deviation in the CSI 300 lowest 80%;
-- four positive annual `profit_dedt` observations with latest not below three years earlier;
+- four positive annual `profit_dedt` observations with `latest / three-years-earlier - 1 >= -10%` (tolerates ordinary fluctuation, rejects a lowered profit base);
 - latest comparable DPS / prior-three-year median comparable DPS at least 70%;
 - nonfinancial companies: latest CFO/dividend at least 1 and three-year median at least 1;
 - latest audited annual opinion is standard unqualified;
 - no direct property-development, property-sales, or commercial-property-operation main business.
-- banks additionally require three complete audited annual observations for all eight bank metrics, latest NPL ratio at most 2%, provision coverage at least 150%, actual loan provision ratio at least 2.5%, core Tier-1 capital at least 7.5%, Tier-1 capital at least 8.5%, and total capital adequacy at least 10.5%.
+- banks additionally require three complete audited annual observations for all eight bank metrics, latest NPL ratio at most 2%, provision coverage at least 150%, actual loan provision ratio at least 1.5%, core Tier-1 capital at least 7.5%, Tier-1 capital at least 8.5%, and total capital adequacy at least 10.5%.
 
-There is no company-quality category gate. Missing mandatory structured evidence is `data_gap`, not zero and not a hard-gate failure. Do not create a formal ranking while a required factor remains a data gap.
+There is no company-quality category gate.
+
+## Top10 Portfolio Constraint
+
+Fill the formal Top10 by total score descending, but admit at most five companies with the same `stock_basic.industry`. A company skipped by this cap keeps its score and full-universe rank, is marked `concentration_capped` with an industry-cap reason, and the next eligible company fills the slot. The cap changes only Top10 membership, never scores or hard gates.
+ Missing mandatory structured evidence is `data_gap`, not zero and not a hard-gate failure. Do not create a formal ranking while a required factor remains a data gap.
 
 ## Scoring
 

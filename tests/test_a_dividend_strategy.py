@@ -654,6 +654,112 @@ class ADividendStrategyTest(unittest.TestCase):
         self.assertTrue(sufficient_profile.get("dividend_yield_data_sufficient"))
         self.assertTrue(sufficient_profile["long_term_dividend_above_3"])
 
+    def test_blank_yield_on_trading_day_counts_as_zero_and_missing_close_is_undetermined(self):
+        module = load_module()
+        frame = pd.DataFrame(
+            {
+                "trade_date": [f"{index:08d}" for index in range(1250)],
+                "close": [10.0] * 1000 + [10.0] * 200 + [None] * 50,
+                "dv_ttm": [4.0] * 1000 + [None] * 250,
+            }
+        )
+
+        profile = module.dividend_yield_profile(frame)
+
+        self.assertEqual(profile["dividend_yield_valid_days_5y"], 1200)
+        self.assertAlmostEqual(profile["dividend_yield_data_coverage_5y"], 0.96)
+        self.assertAlmostEqual(profile["dividend_yield_ge3_ratio"], 1000 / 1200, places=4)
+        self.assertEqual(profile["dividend_yield_min_5y"], 0.0)
+        self.assertIsNone(profile["current_dividend_yield"])
+        self.assertTrue(profile["long_term_dividend_above_3"])
+
+        stopped = frame.assign(close=[10.0] * 1250)
+        stopped_profile = module.dividend_yield_profile(stopped)
+        self.assertEqual(stopped_profile["current_dividend_yield"], 0.0)
+        self.assertAlmostEqual(stopped_profile["dividend_yield_ge3_ratio"], 0.80)
+        self.assertTrue(stopped_profile["long_term_dividend_above_3"])
+
+    def test_dividend_yield_entry_boundary_is_eighty_percent(self):
+        module = load_module()
+
+        def profile(ge3_days: int, total: int = 1000):
+            return module.dividend_yield_profile(
+                pd.DataFrame(
+                    {
+                        "trade_date": [f"{index:08d}" for index in range(total)],
+                        "close": [10.0] * total,
+                        "dv_ttm": [4.0] * ge3_days + [None] * (total - ge3_days),
+                    }
+                )
+            )
+
+        self.assertTrue(profile(800)["long_term_dividend_above_3"])
+        self.assertFalse(profile(1999, total=2500)["long_term_dividend_above_3"])
+        reason = module.evaluate_market_dividend_preconditions(
+            {"current_price": 10, **profile(799)}
+        )
+        self.assertIn("低于80%", reason)
+
+    def test_prior_formal_top10_members_are_retained_down_to_seventy_five_percent(self):
+        module = load_module()
+        frame = pd.DataFrame(
+            {
+                "trade_date": [f"{index:08d}" for index in range(1000)],
+                "close": [10.0] * 1000,
+                "dv_ttm": [None] * 220 + [4.0] * 780,
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            data_root = Path(tmp)
+            outputs = data_root / module.OUTPUT_ROOT_NAME
+            for run_date, codes in [
+                ("20261001", ["600001.SH"]),
+                ("20261030", ["600002.SH", "600003.SH"]),
+                ("20261101", ["600009.SH"]),
+            ]:
+                (outputs / run_date).mkdir(parents=True)
+                pd.DataFrame({"ts_code": codes}).to_csv(
+                    outputs / run_date / f"hs300-dividend-top10-{run_date}.csv",
+                    index=False,
+                    encoding="utf-8-sig",
+                )
+            (outputs / "20261031_sim_yield_2_5pct").mkdir()
+            empty = module.load_prior_formal_top("20261001", data_root=data_root)
+            prior = module.load_prior_formal_top("20261101", data_root=data_root)
+
+        self.assertEqual(empty["codes"], set())
+        self.assertEqual(prior["run_date"], "20261030")
+        self.assertEqual(prior["codes"], {"600002.SH", "600003.SH"})
+        self.assertTrue(prior["source"].endswith("hs300-dividend-top10-20261030.csv"))
+
+        member = module.apply_dividend_yield_hysteresis(
+            module.dividend_yield_profile(frame), "600002.SH", prior
+        )
+        newcomer = module.apply_dividend_yield_hysteresis(
+            module.dividend_yield_profile(frame), "600005.SH", prior
+        )
+        no_prior = module.apply_dividend_yield_hysteresis(
+            module.dividend_yield_profile(frame), "600002.SH", None
+        )
+
+        self.assertTrue(member["long_term_dividend_above_3"])
+        self.assertEqual(member["dividend_yield_required_ratio"], 0.75)
+        self.assertTrue(member["prior_formal_top10_member"])
+        self.assertFalse(newcomer["long_term_dividend_above_3"])
+        self.assertEqual(newcomer["dividend_yield_required_ratio"], 0.80)
+        self.assertFalse(no_prior["long_term_dividend_above_3"])
+        self.assertEqual(no_prior["prior_formal_top10_source"], "")
+        below = module.apply_dividend_yield_hysteresis(
+            module.dividend_yield_profile(frame.assign(dv_ttm=[None] * 251 + [4.0] * 749)),
+            "600002.SH",
+            prior,
+        )
+        self.assertFalse(below["long_term_dividend_above_3"])
+        self.assertIn(
+            "低于75%（上期正式Top10成员保留线）",
+            module.evaluate_market_dividend_preconditions({"current_price": 10, **below}),
+        )
+
     def test_insufficient_dividend_data_fails_before_financial_report(self):
         module = load_module()
         row = {
@@ -920,12 +1026,14 @@ class ADividendStrategyTest(unittest.TestCase):
         self.assertFalse(failed["passed"])
         self.assertEqual(failed["three_year_average_payout_ratio"], 0.10)
 
-    def test_profit_trend_gate_requires_four_positive_years_and_nonnegative_endpoint_change(self):
+    def test_profit_trend_gate_requires_four_positive_years_and_tolerates_ten_percent_decline(self):
         module = load_module()
 
         self.assertTrue(module.profit_trend_gate({2022: 100, 2023: 85, 2024: 92, 2025: 105})["passed"])
-        self.assertFalse(module.profit_trend_gate({2022: 100, 2023: 120, 2024: 110, 2025: 90})["passed"])
+        self.assertTrue(module.profit_trend_gate({2022: 100, 2023: 120, 2024: 110, 2025: 90})["passed"])
+        self.assertFalse(module.profit_trend_gate({2022: 100, 2023: 120, 2024: 110, 2025: 89.99})["passed"])
         self.assertFalse(module.profit_trend_gate({2022: 100, 2023: -1, 2024: 110, 2025: 120})["passed"])
+        self.assertFalse(module.profit_trend_gate({2022: 100, 2023: 120, 2024: 110, 2025: 0})["passed"])
 
     def test_cashflow_dividend_gate_uses_latest_and_three_year_median(self):
         module = load_module()
@@ -995,19 +1103,24 @@ class ADividendStrategyTest(unittest.TestCase):
             [*records[:-1], {**records[-1], "npl_ratio": 2.10}]
         )
         failed_loan_provision = module.bank_quality_profile(
-            [*records[:-1], {**records[-1], "loan_provision_ratio": 2.49}]
+            [*records[:-1], {**records[-1], "loan_provision_ratio": 1.49}]
+        )
+        boundary_loan_provision = module.bank_quality_profile(
+            [*records[:-1], {**records[-1], "loan_provision_ratio": 1.50}]
         )
 
         self.assertTrue(passed["bank_quality_gate_passed"])
         self.assertEqual(passed["bank_npl_ratio"], 1.10)
         self.assertAlmostEqual(passed["bank_npl_change_3y"], -0.20)
         self.assertAlmostEqual(passed["bank_nim_change_3y"], -0.20)
-        self.assertEqual(passed.get("bank_required_loan_provision_ratio"), 2.50)
-        self.assertAlmostEqual(passed.get("bank_excess_loan_provision_ratio"), 0.40)
+        self.assertAlmostEqual(passed.get("bank_required_loan_provision_ratio"), 1.65)
+        self.assertAlmostEqual(passed.get("bank_excess_loan_provision_ratio"), 1.25)
+        self.assertTrue(boundary_loan_provision["bank_quality_gate_passed"])
         self.assertFalse(failed["bank_quality_gate_passed"])
         self.assertIn("不良贷款率", failed["bank_quality_gate_reason"])
         self.assertFalse(failed_loan_provision["bank_quality_gate_passed"])
         self.assertIn("贷款拨备率", failed_loan_provision["bank_quality_gate_reason"])
+        self.assertIn("低于1.5%", failed_loan_provision["bank_quality_gate_reason"])
 
     def test_bank_weight_model_is_independent_and_totals_one_hundred(self):
         module = load_module()
@@ -1276,6 +1389,63 @@ class ADividendStrategyTest(unittest.TestCase):
         top = module.formal_top_candidates(rows)
 
         self.assertEqual([row["ts_code"] for row in top], ["C", "A"])
+
+    def test_top10_caps_one_industry_at_five_and_promotes_next_company(self):
+        module = load_module()
+        rows = [
+            {"ts_code": f"B{index}", "industry": "银行", "selected": "是", "dividend_score_total": 100 - index}
+            for index in range(7)
+        ] + [
+            {"ts_code": f"P{index}", "industry": "电力", "selected": "是", "dividend_score_total": 50 - index}
+            for index in range(6)
+        ]
+
+        top = module.formal_top_candidates(rows)
+
+        self.assertEqual(
+            [row["ts_code"] for row in top],
+            ["B0", "B1", "B2", "B3", "B4", "P0", "P1", "P2", "P3", "P4"],
+        )
+
+    def test_candidate_rows_mark_industry_capped_rows_and_keep_score_rank(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            market = Path(tmp)
+            constituents = [
+                {"ts_code": f"60000{index}.SH", "name": f"银{index}", "industry": "银行"}
+                for index in range(6)
+            ] + [{"ts_code": "600100.SH", "name": "电", "industry": "电力"}]
+            pd.DataFrame(constituents).to_csv(market / "constituents.csv", index=False)
+            structured = {
+                item["ts_code"]: {
+                    "ts_code": item["ts_code"],
+                    "market_preflight_passed": True,
+                    "structured_gate_passed": True,
+                }
+                for item in constituents
+            }
+            scores = {item["ts_code"]: 90 - index for index, item in enumerate(constituents)}
+
+            def fake_score(rows):
+                return [{**row, "dividend_score_total": scores[row["ts_code"]]} for row in rows]
+
+            with (
+                patch.object(module, "evaluate_market_dividend_preconditions", return_value=None),
+                patch.object(module, "score_cross_section", side_effect=fake_score),
+            ):
+                rows = module.build_candidate_rows(market, structured_factors=structured)
+
+        by_code = {row["ts_code"]: row for row in rows}
+        capped = by_code["600005.SH"]
+        self.assertEqual(capped["selection_status"], "concentration_capped")
+        self.assertEqual(capped["selected"], "否")
+        self.assertIn("行业上限", capped["selected_reason"])
+        self.assertEqual(capped["rank"], 6)
+        self.assertEqual(by_code["600100.SH"]["rank"], 7)
+        self.assertEqual(
+            [row["ts_code"] for row in module.formal_top_candidates(rows)],
+            ["600000.SH", "600001.SH", "600002.SH", "600003.SH", "600004.SH", "600100.SH"],
+        )
 
     def test_structured_factor_record_calculates_all_nonfinancial_gates_and_scores(self):
         module = load_module()

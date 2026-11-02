@@ -18,7 +18,7 @@ The vendored `assets/stocks.json` contains all 24 banks in the current CSI 300 s
 |---|---|---|
 | `npl_ratio` | lower | non-performing loan ratio |
 | `provision_coverage_ratio` | higher | provisions / NPL balance |
-| `loan_provision_ratio` | hard gate at 2.5%, not scored | provisions / total loans |
+| `loan_provision_ratio` | hard gate at 1.5%, not scored | provisions / total loans |
 | `net_interest_margin` | higher/stable | disclosed NIM or net interest yield |
 | `cost_income_ratio` | lower | operating efficiency |
 | `core_tier1_capital_ratio` | higher | core Tier-1 capital adequacy |

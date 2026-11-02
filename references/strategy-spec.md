@@ -10,6 +10,10 @@ Cash-dividend total is `cash_div_tax * base_share * 10000`. A verified record-da
 
 Normalize historical DPS for bonus issues, capital-reserve transfers, and splits. Persist raw and comparable annual DPS. If corporate-action evidence is insufficient, mark a data gap rather than compare raw DPS silently.
 
+## Market preflight
+
+Daily yield uses `daily_basic.dv_ttm` on determined days, meaning days with a positive `close`. A blank `dv_ttm` on a determined day is 0% because Tushare leaves it blank when the trailing twelve months contain no cash dividend. Data sufficiency requires at least 1000 determined days and determined-day coverage of at least 80%. The entry line is `dv_ttm >= 3%` on at least 80% of determined days; a previous formal Top10 member (latest earlier-dated formal Top10 in the data root) is retained down to 75%.
+
 ## Structured hard gates
 
 Annual payout ratio is actual tax-inclusive cash-dividend total divided by annual parent-attributable net profit. Average the three annual ratios arithmetically.
@@ -21,7 +25,7 @@ Build quarterly TTM profit from cumulative PRC statements:
 
 TTM ROE is TTM parent-attributable profit divided by the average parent equity at the current and prior-year same period. DROE is latest TTM ROE minus prior-year same-period TTM ROE. The stability gate uses the standard deviation of twelve TTM ROEs and keeps the CSI 300 lowest 80%.
 
-Profit trend requires four positive annual `profit_dedt` values and `latest / three-years-earlier - 1 >= 0`.
+Profit trend requires four positive annual `profit_dedt` values and `latest / three-years-earlier - 1 >= -10%`. The 10% tolerance separates ordinary fluctuation from a lowered profit base; it does not remove base-year dependence.
 
 Recent-cut protection requires latest comparable DPS divided by the preceding-three-year median comparable DPS to be at least 70%.
 
@@ -29,7 +33,7 @@ For nonfinancial companies, annual CFO/dividend must be at least 1 in the latest
 
 A non-standard latest annual audit opinion fails. Direct property development, sales, or commercial-property operation is a portfolio exclusion determined from cached `stock_basic.industry` and `stock_company.main_business`. Broad legal `business_scope` text is audit evidence only and must not independently exclude construction, materials, or financial companies. There is no subjective company-quality category gate.
 
-Banks must also have complete parsed values for the latest three audited annual reports. The latest NPL ratio must be at most 2%, provision coverage at least 150%, actual loan provision ratio at least 2.5%, core Tier-1 capital adequacy at least 7.5%, Tier-1 capital adequacy at least 8.5%, and total capital adequacy at least 10.5%. These are strategy hard gates, not points.
+Banks must also have complete parsed values for the latest three audited annual reports. The latest NPL ratio must be at most 2%, provision coverage at least 150%, actual loan provision ratio at least 1.5% (the lower end of the regulatory dynamic range; provision coverage ≥150% already implies loan provision ≥1.5 × NPL, so a higher fixed floor would only penalize low-NPL banks), core Tier-1 capital adequacy at least 7.5%, Tier-1 capital adequacy at least 8.5%, and total capital adequacy at least 10.5%. These are strategy hard gates, not points.
 
 ## Scoring formulas
 
@@ -41,12 +45,12 @@ Banks must also have complete parsed values for the latest three audited annual 
 - `Consecutive years`: actual uninterrupted implemented cash-dividend years through the anchor year; no ten-year cap.
 - `DPS CAGR`: `(latest comparable DPS / oldest comparable DPS)^(1/4) - 1` over five fiscal observations.
 - `Bank NPL quality`: 80% latest NPL reverse percentile plus 20% reverse percentile of latest minus three-years-earlier NPL.
-- `Bank provision quality`: latest provision-coverage percentile only. Actual loan provision ratio must be at least 2.5% as a hard gate and receives no score. `Excess loan provision` is `actual loan provision ratio - max(2.5%, 1.5 × latest NPL ratio)` and is an audit field only.
+- `Bank provision quality`: latest provision-coverage percentile only. Actual loan provision ratio must be at least 1.5% as a hard gate and receives no score. `Excess loan provision` is `actual loan provision ratio - max(1.5%, 1.5 × latest NPL ratio)` and is an audit field only.
 - `Bank capital resilience`: 60% core Tier-1 percentile plus 40% total-capital-adequacy percentile.
 - `Bank NIM quality`: 70% latest-NIM percentile plus 30% percentile of latest minus three-years-earlier NIM.
 - `Bank cost-income`: latest disclosed cost-income ratio, lower is better.
 
-Use the bank, other-financial, and nonfinancial weights and standardization process in `SKILL.md`. Other-financial common factors use all financial passers as their percentile reference; their own weight model remains separate. Only all-gate passers may appear in the formal Top10.
+Use the bank, other-financial, and nonfinancial weights and standardization process in `SKILL.md`. Other-financial common factors use all financial passers as their percentile reference; their own weight model remains separate. Only all-gate passers may appear in the formal Top10. At most five Top10 members may share one `stock_basic.industry`; a capped company keeps its score and rank, is marked `concentration_capped`, and the next eligible company fills the slot.
 
 ## Removed factors
 

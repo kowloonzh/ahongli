@@ -35,7 +35,12 @@ MIN_DIVIDEND_YIELD_DATA_COVERAGE = 0.80
 TOP_CANDIDATE_COUNT = 10
 STRUCTURED_FACTORS_FILENAME = "structured_factors.csv"
 BANK_METRICS_FILENAME = "bank_quality_metrics.csv"
-MIN_BANK_LOAN_PROVISION_RATIO = 2.5
+MIN_BANK_LOAN_PROVISION_RATIO = 1.5
+DIVIDEND_YIELD_THRESHOLD = 3.0
+DIVIDEND_YIELD_ENTRY_RATIO = 0.80
+DIVIDEND_YIELD_RETENTION_RATIO = 0.75
+MIN_PROFIT_DEDT_THREE_YEAR_CHANGE = -0.10
+MAX_TOP_CANDIDATES_PER_INDUSTRY = 5
 COMPANY_PROFILE_FIELDS = [
     "main_business",
     "business_scope",
@@ -118,6 +123,9 @@ CSV_FIELDS = [
     "dividend_yield_ge3_ratio",
     "dividend_yield_cv_5y",
     "long_term_dividend_above_3",
+    "dividend_yield_required_ratio",
+    "prior_formal_top10_member",
+    "prior_formal_top10_source",
     "dividend_anchor_year",
     "consecutive_dividend_years",
     "latest_dps_tax",
@@ -650,13 +658,30 @@ def price_profile(daily: pd.DataFrame) -> dict[str, Any]:
     return result
 
 
-def dividend_yield_profile(daily_basic: pd.DataFrame) -> dict[str, Any]:
-    field = "dv_ttm" if "dv_ttm" in daily_basic.columns else "dv_ratio"
+def daily_dividend_yield_series(daily_basic: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
+    """Return deduplicated observations and the daily TTM yield on determined days.
+
+    Tushare leaves ``dv_ttm`` blank when the trailing 12 months contain no cash
+    dividend. A blank yield on a day with a valid close is therefore 0%, not a
+    missing observation; only days without a close remain undetermined.
+    """
     observations = daily_basic
     if "trade_date" in observations.columns:
         observations = observations.drop_duplicates(subset=["trade_date"], keep="last")
+    field = "dv_ttm" if "dv_ttm" in observations.columns else "dv_ratio"
+    if field not in observations.columns:
+        return observations, pd.Series(dtype=float)
+    raw = pd.to_numeric(observations[field], errors="coerce")
+    if "close" not in observations.columns:
+        return observations, raw.dropna()
+    close = pd.to_numeric(observations["close"], errors="coerce")
+    determined = close.notna() & close.gt(0)
+    return observations, raw.where(raw.notna(), 0.0)[determined]
+
+
+def dividend_yield_profile(daily_basic: pd.DataFrame) -> dict[str, Any]:
+    observations, series = daily_dividend_yield_series(daily_basic)
     observation_days = len(observations)
-    series = numeric_series(observations, field)
     valid_days = len(series)
     data_coverage = valid_days / observation_days if observation_days else 0.0
     data_sufficient = bool(
@@ -664,7 +689,13 @@ def dividend_yield_profile(daily_basic: pd.DataFrame) -> dict[str, Any]:
         and data_coverage >= MIN_DIVIDEND_YIELD_DATA_COVERAGE
     )
     row = latest_row(observations)
-    current = finite_float(row.get(field)) if row is not None and field in row else None
+    current = None
+    if row is not None:
+        if row.name in series.index:
+            current = finite_float(series.loc[row.name])
+        else:
+            field = "dv_ttm" if "dv_ttm" in observations.columns else "dv_ratio"
+            current = finite_float(row.get(field))
     if series.empty:
         return {
             "current_dividend_yield": current,
@@ -677,13 +708,15 @@ def dividend_yield_profile(daily_basic: pd.DataFrame) -> dict[str, Any]:
             "dividend_yield_data_coverage_5y": round(data_coverage, 4),
             "dividend_yield_data_sufficient": data_sufficient,
             "dividend_yield_ge3_ratio": 0.0,
+            "dividend_yield_ge3_ratio_exact": 0.0,
             "dividend_yield_cv_5y": None,
+            "dividend_yield_required_ratio": DIVIDEND_YIELD_ENTRY_RATIO,
             "long_term_dividend_above_3": False,
             "dividend_stable": False,
         }
     mean = float(series.mean())
     cv = float(series.std(ddof=0) / mean) if mean else None
-    ge3_ratio = float((series >= 3.0).mean())
+    ge3_ratio = float((series >= DIVIDEND_YIELD_THRESHOLD).mean())
     p10 = float(series.quantile(0.10))
     return {
         "current_dividend_yield": current,
@@ -696,10 +729,66 @@ def dividend_yield_profile(daily_basic: pd.DataFrame) -> dict[str, Any]:
         "dividend_yield_data_coverage_5y": round(data_coverage, 4),
         "dividend_yield_data_sufficient": data_sufficient,
         "dividend_yield_ge3_ratio": round(ge3_ratio, 4),
+        "dividend_yield_ge3_ratio_exact": ge3_ratio,
         "dividend_yield_cv_5y": round(cv, 4) if cv is not None else None,
-        "long_term_dividend_above_3": bool(data_sufficient and ge3_ratio >= 0.80),
+        "dividend_yield_required_ratio": DIVIDEND_YIELD_ENTRY_RATIO,
+        "long_term_dividend_above_3": bool(
+            data_sufficient and ge3_ratio >= DIVIDEND_YIELD_ENTRY_RATIO
+        ),
         "dividend_stable": bool(cv is not None and cv <= 0.35),
     }
+
+
+def empty_prior_formal_top() -> dict[str, Any]:
+    return {"run_date": "", "source": "", "codes": set()}
+
+
+def load_prior_formal_top(
+    run_date: str,
+    data_root: Path | str | None = None,
+) -> dict[str, Any]:
+    """Load the latest formal Top10 dated strictly before ``run_date``."""
+    current = compact_date(run_date)
+    root = output_dir(current, data_root=data_root).parent
+    if not root.is_dir():
+        return empty_prior_formal_top()
+    for candidate in sorted(
+        (path for path in root.iterdir() if path.is_dir() and re.fullmatch(r"\d{8}", path.name)),
+        key=lambda path: path.name,
+        reverse=True,
+    ):
+        if candidate.name >= current:
+            continue
+        top_path = candidate / f"hs300-dividend-top10-{candidate.name}.csv"
+        if not top_path.is_file():
+            continue
+        frame = pd.read_csv(top_path, dtype=str, encoding="utf-8-sig")
+        codes = set(frame.get("ts_code", pd.Series(dtype=str)).dropna().astype(str).str.strip())
+        return {"run_date": candidate.name, "source": str(top_path), "codes": codes - {""}}
+    return empty_prior_formal_top()
+
+
+def apply_dividend_yield_hysteresis(
+    profile: dict[str, Any],
+    ts_code: str,
+    prior_formal_top: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Prior formal Top10 members keep their place down to the retention ratio."""
+    prior = prior_formal_top or empty_prior_formal_top()
+    member = ts_code in prior.get("codes", set())
+    required = DIVIDEND_YIELD_RETENTION_RATIO if member else DIVIDEND_YIELD_ENTRY_RATIO
+    ratio = finite_float(profile.get("dividend_yield_ge3_ratio_exact"))
+    if ratio is None:
+        ratio = finite_float(profile.get("dividend_yield_ge3_ratio"))
+    profile["prior_formal_top10_member"] = member
+    profile["prior_formal_top10_source"] = str(prior.get("source") or "")
+    profile["dividend_yield_required_ratio"] = required
+    profile["long_term_dividend_above_3"] = bool(
+        profile.get("dividend_yield_data_sufficient")
+        and ratio is not None
+        and ratio >= required
+    )
+    return profile
 
 
 def real_estate_relevance(row: dict[str, Any]) -> dict[str, Any]:
@@ -746,7 +835,8 @@ def has_long_term_dividend_above_3(row: dict[str, Any]) -> bool:
     if "long_term_dividend_above_3" in row:
         return bool(row.get("long_term_dividend_above_3"))
     ratio = finite_float(row.get("dividend_yield_ge3_ratio"))
-    return bool(ratio is not None and ratio >= 0.80)
+    required = finite_float(row.get("dividend_yield_required_ratio")) or DIVIDEND_YIELD_ENTRY_RATIO
+    return bool(ratio is not None and ratio >= required)
 
 
 def evaluate_market_dividend_preconditions(row: dict[str, Any]) -> str | None:
@@ -768,7 +858,9 @@ def evaluate_market_dividend_preconditions(row: dict[str, Any]) -> str | None:
     if not has_long_term_dividend_above_3(row):
         ratio = finite_float(row.get("dividend_yield_ge3_ratio"))
         ratio_text = "未取得" if ratio is None else f"{ratio:.1%}"
-        return f"近五年股息率>=3%的交易日占比为{ratio_text}，低于80%"
+        required = finite_float(row.get("dividend_yield_required_ratio")) or DIVIDEND_YIELD_ENTRY_RATIO
+        suffix = "（上期正式Top10成员保留线）" if row.get("prior_formal_top10_member") else ""
+        return f"近五年股息率>=3%的交易日占比为{ratio_text}，低于{required:.0%}{suffix}"
     return None
 
 
@@ -1060,7 +1152,11 @@ def profit_trend_gate(annual_profit_dedt: dict[int, float]) -> dict[str, Any]:
         return {"passed": False, "status": "data_gap", "three_year_change": None}
     numeric = [float(value) for value in values if value is not None]
     change = numeric[-1] / numeric[0] - 1.0 if numeric[0] > 0 else None
-    passed = all(value > 0 for value in numeric) and change is not None and change >= 0.0
+    passed = (
+        all(value > 0 for value in numeric)
+        and change is not None
+        and round(change, 12) >= MIN_PROFIT_DEDT_THREE_YEAR_CHANGE
+    )
     return {"passed": passed, "status": "passed" if passed else "hard_gate_failed", "three_year_change": change}
 
 
@@ -1273,7 +1369,7 @@ def structured_gate_profile(row: dict[str, Any]) -> dict[str, Any]:
         ("three_year_continuous_dividend_passed", "最近3年未连续实施现金分红"),
         ("payout_ratio_gate_passed", "支付率不在策略范围"),
         ("roe_stability_gate_passed", "12季度TTM ROE稳定性未进入沪深300最低80%"),
-        ("profit_trend_gate_passed", "三年扣非归母净利润变化为负或存在非正年度"),
+        ("profit_trend_gate_passed", "三年扣非归母净利润降幅超过10%或存在非正年度"),
         ("audit_gate_passed", "最新年度审计意见不是标准无保留意见"),
     ]
     if not bool(row.get("is_financial")):
@@ -1309,13 +1405,33 @@ def portfolio_scope_gate_profile(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def formal_top_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    selected = [row for row in rows if str(row.get("selected")) == "是"]
-    return sorted(
-        selected,
+def _industry_capped_top(
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Fill Top10 by score, skipping companies whose industry already holds the cap."""
+    selected = sorted(
+        (row for row in rows if str(row.get("selected")) == "是"),
         key=lambda row: finite_float(row.get("dividend_score_total")) or float("-inf"),
         reverse=True,
-    )[:TOP_CANDIDATE_COUNT]
+    )
+    top: list[dict[str, Any]] = []
+    capped: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    for row in selected:
+        if len(top) >= TOP_CANDIDATE_COUNT:
+            break
+        industry = str(row.get("industry") or "").strip()
+        if industry and counts.get(industry, 0) >= MAX_TOP_CANDIDATES_PER_INDUSTRY:
+            capped.append(row)
+            continue
+        if industry:
+            counts[industry] = counts.get(industry, 0) + 1
+        top.append(row)
+    return top, capped
+
+
+def formal_top_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return _industry_capped_top(rows)[0]
 
 
 def is_financial_industry(industry: Any) -> bool:
@@ -1776,6 +1892,7 @@ def ensure_structured_factor_data(
     sleep_seconds: float = 0.2,
     max_workers: int = 4,
     pro=None,
+    prior_formal_top: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     constituents = pd.read_csv(market_dir / "constituents.csv", dtype=str).fillna("")
     if limit:
@@ -1806,6 +1923,7 @@ def ensure_structured_factor_data(
         profile: dict[str, Any] = {"ts_code": code}
         profile.update(price_profile(read_market_csv(market_dir, "daily", code)))
         profile.update(dividend_yield_profile(read_market_csv(market_dir, "daily_basic", code)))
+        apply_dividend_yield_hysteresis(profile, code, prior_formal_top)
         profile["market_preflight_passed"] = evaluate_market_dividend_preconditions(profile) is None
         market_profiles[code] = profile
         if profile["market_preflight_passed"]:
@@ -1978,6 +2096,7 @@ def build_candidate_rows(
     market_dir: Path,
     limit: int | None = None,
     structured_factors: dict[str, dict[str, Any]] | None = None,
+    prior_formal_top: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     constituents = pd.read_csv(market_dir / "constituents.csv", dtype=str)
     if limit:
@@ -1999,6 +2118,7 @@ def build_candidate_rows(
         }
         row.update(price_profile(daily))
         row.update(dividend_yield_profile(daily_basic))
+        apply_dividend_yield_hysteresis(row, ts_code, prior_formal_top)
         market_reason = evaluate_market_dividend_preconditions(row)
         row["market_preflight_passed"] = market_reason is None
         structured = (structured_factors or {}).get(ts_code, {})
@@ -2050,9 +2170,20 @@ def build_candidate_rows(
         finalized.append(row)
 
     rows = finalized
+    _, capped = _industry_capped_top(rows)
+    for row in capped:
+        row["selected"] = "否"
+        row["selection_status"] = "concentration_capped"
+        row["selected_reason"] = (
+            f"行业上限：{row.get('industry', '')}已有{MAX_TOP_CANDIDATES_PER_INDUSTRY}家进入Top10，"
+            "保留得分与排名，由下一名顺延"
+        )
     rows.sort(
         key=lambda record: (
-            1 if record.get("selected") == "是" else 0,
+            1
+            if record.get("selected") == "是"
+            or record.get("selection_status") == "concentration_capped"
+            else 0,
             finite_float(record.get("dividend_score_total")) or -1,
         ),
         reverse=True,
@@ -2200,6 +2331,7 @@ def run_strategy(
         max_workers=max_workers,
         data_root=persistent_data_root,
     )
+    prior_formal_top = load_prior_formal_top(run_date, data_root=persistent_data_root)
     structured_factors = ensure_structured_factor_data(
         run_date,
         market_dir,
@@ -2207,6 +2339,7 @@ def run_strategy(
         limit=limit,
         sleep_seconds=sleep_seconds,
         max_workers=max_workers,
+        prior_formal_top=prior_formal_top,
     )
     bank_codes = {
         ts_code
@@ -2234,6 +2367,7 @@ def run_strategy(
         market_dir,
         limit=limit,
         structured_factors=structured_factors,
+        prior_formal_top=prior_formal_top,
     )
     stage_counts = {
         "universe": len(rows),

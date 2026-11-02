@@ -26,11 +26,12 @@ All mutable runtime data lives under a persistent `{data_root}` outside the inst
 
 - `selected`: all mandatory evidence present and every hard gate passed.
 - `hard_gate_failed`: evidence is sufficient and at least one hard condition failed.
+- `concentration_capped`: passed every hard gate but was skipped from the Top10 because its industry already holds five members; score and rank are retained.
 - `data_gap`: mandatory evidence is missing, stale, truncated, or unparseable.
 
 Formal output cannot rank a `data_gap` or `hard_gate_failed` row as selected. Every non-selected row must retain the first decisive reason plus auditable gate fields.
 
-The complete CSV contains exactly 300 unique rows. The Top10 CSV contains at most ten selected rows sorted by total score descending. Current price and current yield may remain display fields but have no score contribution.
+The complete CSV contains exactly 300 unique rows. The Top10 CSV contains at most ten selected rows sorted by total score descending, with at most five per `stock_basic.industry`. Current price and current yield may remain display fields but have no score contribution.
 
 ## Required bank metrics cache
 
