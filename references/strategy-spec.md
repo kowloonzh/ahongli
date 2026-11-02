@@ -38,12 +38,14 @@ Banks must also have complete parsed values for the latest three audited annual 
 ## Scoring formulas
 
 - `ROE`: latest TTM ROE.
-- `DROE`: latest TTM ROE - prior-year same-period TTM ROE.
-- `OPCFD`: TTM CFO / latest total liabilities; nonfinancial only.
+- `DROE`: latest TTM ROE - prior-year same-period TTM ROE, displayed raw. The scored value is `droe_standardized = DROE (rounded to 0.1pp) / roe_stability_12q`, so insurers' larger ROE swings do not dominate; zero volatility with zero DROE scores as 0.
+- `OPCFD`: TTM CFO / interest-bearing debt at the same period end, where interest-bearing debt is `st_borr + lt_borr + bond_payable + non_cur_liab_due_1y` (blank components on an existing balance-sheet row count as 0). Payables and contract liabilities are excluded because they reflect bargaining power, not repayment pressure. With zero interest-bearing debt, `opcfd` is blank, `interest_bearing_debt` is 0, and the company ranks at the top of the reference pool when TTM CFO is positive and at the bottom otherwise. Nonfinancial only.
 - `FCF dividend coverage`: `sum_3y(CFO - c_pay_acq_const_fiolta) / sum_3y(actual cash dividends)`; nonfinancial only.
 - `Yield CV`: five-year daily `dv_ttm` population standard deviation / mean; lower is better.
-- `Consecutive years`: actual uninterrupted implemented cash-dividend years through the anchor year; no ten-year cap.
-- `DPS CAGR`: `(latest comparable DPS / oldest comparable DPS)^(1/4) - 1` over five fiscal observations.
+- `Consecutive years`: actual uninterrupted implemented cash-dividend years through the anchor year; no ten-year cap. It measures the A-share comparable record only, so A+H companies that listed or returned to A shares recently are understated.
+- `DPS CAGR` (`dps_cagr_5y`): `exp(slope) - 1`, where `slope` is the OLS slope of `ln(comparable DPS)` on fiscal year over five consecutive fiscal observations, all of which must be positive. This is less sensitive to the endpoint years than a two-point CAGR.
+
+Percentiles are average-tie ranks without winsorizing. Before ranking, round ROE and DROE to 0.1pp, bank NPL change and NIM change to 0.05pp, and DPS growth to 1pp, so differences below disclosure precision tie.
 - `Bank NPL quality`: 80% latest NPL reverse percentile plus 20% reverse percentile of latest minus three-years-earlier NPL.
 - `Bank provision quality`: latest provision-coverage percentile only. Actual loan provision ratio must be at least 1.5% as a hard gate and receives no score. `Excess loan provision` is `actual loan provision ratio - max(1.5%, 1.5 × latest NPL ratio)` and is an audit field only.
 - `Bank capital resilience`: 60% core Tier-1 percentile plus 40% total-capital-adequacy percentile.

@@ -1188,6 +1188,7 @@ class ADividendStrategyTest(unittest.TestCase):
             "is_bank": True,
             "roe": 10,
             "droe": 0,
+            "roe_stability_12q": 1.0,
             "dividend_yield_cv_5y": 0.2,
             "consecutive_dividend_years": 10,
             "dps_cagr_5y": 0.05,
@@ -1240,6 +1241,7 @@ class ADividendStrategyTest(unittest.TestCase):
             "is_bank": True,
             "roe": 20,
             "droe": 2,
+            "roe_stability_12q": 1.0,
             "dividend_yield_cv_5y": 0.10,
             "consecutive_dividend_years": 20,
             "dps_cagr_5y": 0.10,
@@ -1259,6 +1261,7 @@ class ADividendStrategyTest(unittest.TestCase):
             "is_bank": False,
             "roe": 10,
             "droe": 1,
+            "roe_stability_12q": 1.0,
             "dividend_yield_cv_5y": 0.20,
             "consecutive_dividend_years": 10,
             "dps_cagr_5y": 0.05,
@@ -1301,6 +1304,106 @@ class ADividendStrategyTest(unittest.TestCase):
 
         self.assertGreater(by_code["A"]["dividend_yield_cv_percentile"], by_code["B"]["dividend_yield_cv_percentile"])
         self.assertGreater(by_code["A"]["consecutive_dividend_years_percentile"], by_code["B"]["consecutive_dividend_years_percentile"])
+
+    def test_dps_growth_uses_log_linear_regression_not_endpoints(self):
+        module = load_module()
+
+        self.assertAlmostEqual(module.log_linear_growth_rate([1, 2, 4, 8, 16]), 1.0)
+        steady = module.log_linear_growth_rate([1.0, 1.1, 1.21, 1.331, 1.4641])
+        self.assertAlmostEqual(steady, 0.10)
+        # A low first year inflates endpoint CAGR far more than the regression.
+        dip = [0.5, 1.0, 1.0, 1.0, 1.0]
+        endpoint = (dip[-1] / dip[0]) ** 0.25 - 1
+        self.assertLess(module.log_linear_growth_rate(dip), endpoint)
+        self.assertIsNone(module.log_linear_growth_rate([1.0, 0.0, 1.0]))
+
+    def test_interest_bearing_debt_sums_borrowings_bonds_and_current_portion(self):
+        module = load_module()
+        balance = pd.DataFrame(
+            [
+                {"end_date": "20251231", "st_borr": 10.0, "lt_borr": 20.0, "bond_payable": None, "non_cur_liab_due_1y": 5.0},
+                {"end_date": "20250930", "st_borr": None, "lt_borr": None, "bond_payable": None, "non_cur_liab_due_1y": None},
+            ]
+        )
+
+        self.assertEqual(module.interest_bearing_debt_at(balance, "20251231"), 35.0)
+        self.assertEqual(module.interest_bearing_debt_at(balance, "20250930"), 0.0)
+        self.assertIsNone(module.interest_bearing_debt_at(balance, "20250630"))
+
+    def test_opcfd_debt_free_company_ranks_at_top_of_reference_pool(self):
+        module = load_module()
+        base = {
+            "is_financial": False,
+            "roe": 10,
+            "droe": 0,
+            "roe_stability_12q": 1.0,
+            "fcf_dividend_coverage_3y": 1.2,
+            "dividend_yield_cv_5y": 0.2,
+            "consecutive_dividend_years": 10,
+            "dps_cagr_5y": 0.05,
+        }
+        rows = [
+            {**base, "ts_code": "FREE", "opcfd": None, "interest_bearing_debt": 0.0, "ttm_cfo_latest": 100.0},
+            {**base, "ts_code": "HIGH", "opcfd": 5.0, "interest_bearing_debt": 20.0, "ttm_cfo_latest": 100.0},
+            {**base, "ts_code": "LOW", "opcfd": 0.1, "interest_bearing_debt": 1000.0, "ttm_cfo_latest": 100.0},
+            {**base, "ts_code": "BURN", "opcfd": None, "interest_bearing_debt": 0.0, "ttm_cfo_latest": -5.0},
+        ]
+
+        scored = {row["ts_code"]: row for row in module.score_cross_section(rows)}
+
+        self.assertEqual(scored["FREE"]["opcfd_percentile"], 100.0)
+        self.assertEqual(scored["BURN"]["opcfd_percentile"], 25.0)
+        self.assertGreater(scored["HIGH"]["opcfd_percentile"], scored["LOW"]["opcfd_percentile"])
+        self.assertIsNotNone(scored["FREE"]["dividend_score_total"])
+        self.assertNotIn("opcfd_rank_value", scored["FREE"])
+
+    def test_droe_is_standardized_by_own_roe_volatility(self):
+        module = load_module()
+        base = {
+            "is_financial": True,
+            "is_bank": False,
+            "roe": 10,
+            "dividend_yield_cv_5y": 0.2,
+            "consecutive_dividend_years": 10,
+            "dps_cagr_5y": 0.05,
+        }
+        rows = [
+            {**base, "ts_code": "VOLATILE", "droe": 3.0, "roe_stability_12q": 6.0},
+            {**base, "ts_code": "STEADY", "droe": 1.0, "roe_stability_12q": 0.5},
+            {**base, "ts_code": "FLAT", "droe": 0.0, "roe_stability_12q": 0.0},
+        ]
+
+        scored = {row["ts_code"]: row for row in module.score_cross_section(rows)}
+
+        self.assertAlmostEqual(scored["VOLATILE"]["droe_standardized"], 0.5)
+        self.assertAlmostEqual(scored["STEADY"]["droe_standardized"], 2.0)
+        self.assertEqual(scored["FLAT"]["droe_standardized"], 0.0)
+        self.assertGreater(scored["STEADY"]["droe_percentile"], scored["VOLATILE"]["droe_percentile"])
+
+    def test_ranking_ties_differences_below_disclosure_precision_without_winsorizing(self):
+        module = load_module()
+        base = {
+            "is_financial": True,
+            "is_bank": False,
+            "droe": 0,
+            "roe_stability_12q": 1.0,
+            "dividend_yield_cv_5y": 0.2,
+            "consecutive_dividend_years": 10,
+        }
+        rows = [
+            {**base, "ts_code": "A", "roe": 10.01, "dps_cagr_5y": 0.051},
+            {**base, "ts_code": "B", "roe": 10.04, "dps_cagr_5y": 0.049},
+            {**base, "ts_code": "C", "roe": 10.20, "dps_cagr_5y": 0.080},
+            {**base, "ts_code": "D", "roe": 50.00, "dps_cagr_5y": 0.020},
+        ]
+
+        scored = {row["ts_code"]: row for row in module.score_cross_section(rows)}
+
+        self.assertEqual(scored["A"]["roe_percentile"], scored["B"]["roe_percentile"])
+        self.assertLess(scored["B"]["roe_percentile"], scored["C"]["roe_percentile"])
+        self.assertEqual(scored["D"]["roe_percentile"], 100.0)
+        self.assertEqual(scored["A"]["dps_cagr_5y_percentile"], scored["B"]["dps_cagr_5y_percentile"])
+        self.assertEqual(module.precision_bucket(pd.Series([0.124, 0.126]), 0.05).round(2).tolist(), [0.1, 0.15])
 
     def test_new_contract_uses_top10_and_excludes_legacy_score_fields(self):
         module = load_module()
@@ -1469,6 +1572,10 @@ class ADividendStrategyTest(unittest.TestCase):
                     "end_date": period,
                     "total_hldr_eqy_exc_min_int": 1_000_000_000,
                     "total_liab": 500_000_000,
+                    "st_borr": 100_000_000,
+                    "lt_borr": 150_000_000,
+                    "bond_payable": None,
+                    "non_cur_liab_due_1y": 50_000_000,
                 }
                 for period, _ in periods
             ]

@@ -11,7 +11,7 @@
 - `income.n_income_attr_p`: parent-attributable profit and TTM construction.
 - `fina_indicator.profit_dedt`: four-year adjusted-profit trend.
 - `cashflow.n_cashflow_act`, `cashflow.c_pay_acq_const_fiolta`: CFO, TTM CFO, and FCF.
-- `balancesheet.total_liab`, `balancesheet.total_hldr_eqy_exc_min_int`: OPCFD and TTM ROE denominators.
+- `balancesheet.st_borr`, `lt_borr`, `bond_payable`, `non_cur_liab_due_1y`: interest-bearing debt, the OPCFD denominator; `balancesheet.total_hldr_eqy_exc_min_int`: TTM ROE denominator; `total_liab` is retained for audit.
 - `fina_audit.audit_result`: latest annual audit gate.
 
 Financial API date-range inputs filter announcement dates. Query through `run_date`, then select statement periods from returned `end_date`. Use consolidated statements, keep only records available by `run_date`, and deduplicate revisions deterministically. Page or query per stock when a full-period endpoint can truncate.

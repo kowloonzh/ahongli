@@ -80,7 +80,7 @@ Fill the formal Top10 by total score descending, but admit at most five companie
 
 ## Scoring
 
-Use market-preflight passers as the scoring reference pool. Winsorize each factor at 2.5% and 97.5%. Bank-specific and bank common-factor percentiles use the bank pool; nonfinancial percentiles use the nonfinancial pool. Other-financial companies retain their own weight model but benchmark common factors against all financial passers, preventing a one-company insurance cohort from mechanically scoring 100. Reverse five-year yield CV, bank NPL level/change, and bank cost-income ratio. Do not redistribute missing weights per company.
+Use market-preflight passers as the scoring reference pool. Do not winsorize. Before ranking, round factors to their disclosure precision so sub-precision gaps tie: ROE and DROE 0.1pp, bank NPL change and NIM change 0.05pp, DPS growth 1pp. Rank with average ties. Bank-specific and bank common-factor percentiles use the bank pool; nonfinancial percentiles use the nonfinancial pool. Other-financial companies retain their own weight model but benchmark common factors against all financial passers, preventing a one-company insurance cohort from mechanically scoring 100. Reverse five-year yield CV, bank NPL level/change, and bank cost-income ratio. Do not redistribute missing weights per company.
 
 Nonfinancial weights:
 
@@ -113,7 +113,9 @@ Bank weights:
 - actual consecutive dividend years 10%;
 - five-year comparable DPS CAGR 10%.
 
-Do not cap consecutive dividend years at ten. Financial companies do not receive zero for OPCFD or FCF coverage; those factors are not applicable and their separate model already totals 100%.
+DROE is scored as standardized DROE (DROE / the company's own twelve-quarter TTM ROE standard deviation) in every group; OPCFD is TTM CFO / interest-bearing debt, and a company with zero interest-bearing debt takes the top of the reference pool (bottom if its TTM CFO is not positive). DPS growth is the log-linear regression growth rate over five fiscal comparable DPS values.
+
+Do not cap consecutive dividend years at ten. Consecutive years measure the A-share comparable record only, so A+H companies that returned to A shares recently are systematically understated; this is a known, accepted limitation. Financial companies do not receive zero for OPCFD or FCF coverage; those factors are not applicable and their separate model already totals 100%.
 
 ## Company Profile Reuse
 

@@ -41,6 +41,25 @@ DIVIDEND_YIELD_ENTRY_RATIO = 0.80
 DIVIDEND_YIELD_RETENTION_RATIO = 0.75
 MIN_PROFIT_DEDT_THREE_YEAR_CHANGE = -0.10
 MAX_TOP_CANDIDATES_PER_INDUSTRY = 5
+INTEREST_BEARING_DEBT_FIELDS = [
+    "st_borr",
+    "lt_borr",
+    "bond_payable",
+    "non_cur_liab_due_1y",
+]
+# Ranking precision: differences finer than disclosure precision are noise.
+FACTOR_PRECISION_STEPS = {
+    "roe": 0.1,
+    "droe": 0.1,
+    "bank_npl_change_3y": 0.05,
+    "bank_nim_change_3y": 0.05,
+    "dps_cagr_5y": 0.01,
+}
+# Scored source field when it differs from the factor name.
+FACTOR_SOURCE_FIELDS = {
+    "droe": "droe_standardized",
+    "opcfd": "opcfd_rank_value",
+}
 COMPANY_PROFILE_FIELDS = [
     "main_business",
     "business_scope",
@@ -162,9 +181,11 @@ CSV_FIELDS = [
     "roe_percentile",
     "roe_score_contribution",
     "droe",
+    "droe_standardized",
     "droe_percentile",
     "droe_score_contribution",
     "opcfd",
+    "interest_bearing_debt",
     "opcfd_percentile",
     "opcfd_score_contribution",
     "fcf_dividend_coverage_3y",
@@ -1036,7 +1057,7 @@ def dividend_history_profile(
     five_values = [annual_comparable.get(year, 0.0) for year in five_years]
     cagr = None
     if all(value > 0 for value in five_values):
-        cagr = (five_values[-1] / five_values[0]) ** (1.0 / 4.0) - 1.0
+        cagr = log_linear_growth_rate(five_values)
     return {
         "dividend_anchor_year": anchor_year,
         "annual_raw_dps": annual_raw,
@@ -1051,6 +1072,19 @@ def dividend_history_profile(
         "data_quality": "normal",
         "data_quality_reason": "Tushare已实施含税现金分红，按财年合并并对送转股进行可比口径调整",
     }
+
+
+def log_linear_growth_rate(values: list[float]) -> float | None:
+    """Annual growth implied by the OLS slope of ln(value) on consecutive years."""
+    if len(values) < 2 or any(value <= 0 for value in values):
+        return None
+    logs = [math.log(value) for value in values]
+    count = len(logs)
+    mean_x = (count - 1) / 2.0
+    mean_y = sum(logs) / count
+    numerator = sum((index - mean_x) * (value - mean_y) for index, value in enumerate(logs))
+    denominator = sum((index - mean_x) ** 2 for index in range(count))
+    return math.exp(numerator / denominator) - 1.0
 
 
 def _period_value_map(frame: pd.DataFrame, field: str) -> dict[str, float]:
@@ -1086,6 +1120,27 @@ def build_ttm_series(frame: pd.DataFrame, field: str, output_field: str) -> pd.D
             ttm_value = previous_fy + values[end_date] - prior_ytd
         rows.append({"end_date": end_date, output_field: ttm_value})
     return pd.DataFrame(rows)
+
+
+def interest_bearing_debt_at(balance: pd.DataFrame, end_date: str) -> float | None:
+    """Short + long borrowings + bonds payable + non-current liabilities due in one year.
+
+    A blank component on an existing balance-sheet row means the company has
+    no such liability; a missing period row is a data gap.
+    """
+    if balance.empty or "end_date" not in balance.columns:
+        return None
+    frame = balance.copy()
+    frame["_end_date"] = frame["end_date"].astype(str).str.replace(r"\D", "", regex=True).str[:8]
+    period = frame[frame["_end_date"].eq(end_date)]
+    if period.empty:
+        return None
+    row = period.iloc[-1]
+    total = 0.0
+    for field in INTEREST_BEARING_DEBT_FIELDS:
+        value = finite_float(row.get(field)) if field in period.columns else None
+        total += max(0.0, value or 0.0)
+    return total
 
 
 def build_ttm_roe_series(income: pd.DataFrame, balance: pd.DataFrame) -> pd.DataFrame:
@@ -1211,14 +1266,13 @@ def _assign_percentile(
     higher_is_better: bool,
 ) -> None:
     series = pd.to_numeric(frame.get(source_field), errors="coerce")
-    valid = series.dropna()
-    if valid.empty:
+    step = FACTOR_PRECISION_STEPS.get(source_field)
+    if step is not None:
+        series = precision_bucket(series, step)
+    if series.dropna().empty:
         frame[output_field] = float("nan")
         return
-    lower = valid.quantile(0.025)
-    upper = valid.quantile(0.975)
-    clipped = series.clip(lower=lower, upper=upper)
-    frame[output_field] = clipped.rank(
+    frame[output_field] = series.rank(
         method="average",
         pct=True,
         ascending=higher_is_better,
@@ -1259,10 +1313,55 @@ def _build_bank_composite_percentiles(frame: pd.DataFrame) -> None:
     )
 
 
+def precision_bucket(series: pd.Series, step: float) -> pd.Series:
+    """Round to the disclosure precision so sub-precision gaps tie in rank."""
+    numeric = pd.to_numeric(series, errors="coerce")
+    return (numeric / step).round() * step
+
+
+def prepare_scoring_inputs(frame: pd.DataFrame) -> pd.DataFrame:
+    """Derive ranked inputs: standardized DROE and the OPCFD rank value."""
+    prepared = frame.copy()
+    droe = precision_bucket(
+        prepared.get("droe", pd.Series(float("nan"), index=prepared.index)),
+        FACTOR_PRECISION_STEPS["droe"],
+    )
+    volatility = pd.to_numeric(
+        prepared.get("roe_stability_12q", pd.Series(float("nan"), index=prepared.index)),
+        errors="coerce",
+    )
+    standardized = droe / volatility.where(volatility > 0)
+    standardized = standardized.mask(volatility.eq(0) & droe.notna(), 0.0)
+    prepared["droe_standardized"] = standardized
+    opcfd = pd.to_numeric(
+        prepared.get("opcfd", pd.Series(float("nan"), index=prepared.index)), errors="coerce"
+    )
+    debt = pd.to_numeric(
+        prepared.get("interest_bearing_debt", pd.Series(float("nan"), index=prepared.index)),
+        errors="coerce",
+    )
+    cfo = pd.to_numeric(
+        prepared.get("ttm_cfo_latest", pd.Series(float("nan"), index=prepared.index)),
+        errors="coerce",
+    )
+    # No interest-bearing debt: positive operating cash flow ranks at the top
+    # of the reference pool, non-positive cash flow at the bottom.
+    prepared["opcfd_rank_value"] = (
+        opcfd.mask(debt.eq(0) & cfo.gt(0), float("inf"))
+        .mask(debt.eq(0) & cfo.le(0), float("-inf"))
+    )
+    return prepared
+
+
+def _ranking_source(factor: str) -> str:
+    return FACTOR_SOURCE_FIELDS.get(factor, factor)
+
+
 def score_cross_section(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     frame = pd.DataFrame(rows)
     if frame.empty:
         return []
+    frame = prepare_scoring_inputs(frame)
     factors = sorted(
         set(NONFINANCIAL_FACTOR_WEIGHTS)
         | set(FINANCIAL_FACTOR_WEIGHTS)
@@ -1290,7 +1389,7 @@ def score_cross_section(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 percentile_field = FACTOR_PERCENTILE_FIELDS[factor]
                 _assign_percentile(
                     reference,
-                    factor,
+                    _ranking_source(factor),
                     percentile_field,
                     higher_is_better=factor != "dividend_yield_cv_5y",
                 )
@@ -1307,12 +1406,15 @@ def score_cross_section(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 continue
             _assign_percentile(
                 scored,
-                factor,
+                _ranking_source(factor),
                 percentile_field,
                 higher_is_better=factor not in {"dividend_yield_cv_5y", "bank_cost_income_ratio"},
             )
         result_frames.append(scored)
     combined = pd.concat(result_frames).sort_index()
+    combined = combined.drop(
+        columns=[column for column in combined.columns if column == "opcfd_rank_value"]
+    )
     records = combined.to_dict("records")
     for record in records:
         score = weighted_quality_score(record)
@@ -1677,16 +1779,18 @@ def structured_factor_record_from_frames(
 
     ttm_cfo_series = build_ttm_series(cashflow, "n_cashflow_act", "ttm_cfo")
     latest_cfo = None
-    latest_liabilities = None
+    interest_bearing_debt = None
     if not ttm_cfo_series.empty:
         latest_cfo_row = ttm_cfo_series.sort_values("end_date").iloc[-1]
         latest_cfo = finite_float(latest_cfo_row["ttm_cfo"])
-        liabilities = _period_value_map(balance, "total_liab")
-        latest_liabilities = liabilities.get(str(latest_cfo_row["end_date"]))
+        interest_bearing_debt = interest_bearing_debt_at(balance, str(latest_cfo_row["end_date"]))
     opcfd = (
-        latest_cfo / latest_liabilities
-        if not financial and latest_cfo is not None and latest_liabilities is not None and latest_liabilities > 0
+        latest_cfo / interest_bearing_debt
+        if not financial and latest_cfo is not None and interest_bearing_debt is not None and interest_bearing_debt > 0
         else None
+    )
+    opcfd_available = bool(
+        not financial and latest_cfo is not None and interest_bearing_debt is not None
     )
 
     fcf_coverage = None
@@ -1720,7 +1824,7 @@ def structured_factor_record_from_frames(
         missing.append("三年经营现金流覆盖")
     if audit_gate["status"] == "data_gap":
         missing.append("审计意见")
-    if not financial and (opcfd is None or fcf_coverage is None):
+    if not financial and (not opcfd_available or fcf_coverage is None):
         missing.append("非金融现金质量因子")
 
     record: dict[str, Any] = {
@@ -1750,6 +1854,8 @@ def structured_factor_record_from_frames(
         "audit_result": audit_result,
         "audit_gate_passed": audit_gate["passed"],
         "opcfd": opcfd,
+        "interest_bearing_debt": interest_bearing_debt if not financial else None,
+        "ttm_cfo_latest": latest_cfo if not financial else None,
         "fcf_dividend_coverage_3y": fcf_coverage,
         "annual_comparable_dps_json": json.dumps(
             dividend.get("annual_comparable_dps", {}), ensure_ascii=False, sort_keys=True
@@ -1805,7 +1911,8 @@ def fetch_structured_source_frames(
         end_date=cutoff,
         fields=(
             "ts_code,ann_date,f_ann_date,end_date,report_type,total_liab,"
-            "total_hldr_eqy_exc_min_int,update_flag"
+            "total_hldr_eqy_exc_min_int,st_borr,lt_borr,bond_payable,"
+            "non_cur_liab_due_1y,update_flag"
         ),
     )
     frames = {
