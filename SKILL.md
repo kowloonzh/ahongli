@@ -186,6 +186,24 @@ python3 scripts/simulate_dividend_threshold.py \
 
 Simulation output goes to `{data_root}/a_dividend_outputs/{YYYYMMDD}_sim_yield_{threshold}/`. Never present a simulation as the formal strategy result.
 
+## Historical Backtest
+
+`scripts/backtest_dividend_strategy.py` reruns the formal screen at past rebalance dates (default: every 1 November, 2016–2025) on point-in-time data and measures what happened afterwards. It calls the same production functions as the formal run; it only supplies as-of-date frames.
+
+```bash
+python3 scripts/backtest_dividend_strategy.py --asof YYYYMMDD --data-root ./data
+```
+
+- Membership: the latest Tushare monthly `index_weight` snapshot on or before each rebalance date, including companies later removed or delisted.
+- Statements: only reports whose period has ended and whose `f_ann_date`/`ann_date` is on or before the rebalance date. Dividends: only events implemented by then. Prices: five years ending on the rebalance date.
+- The previous period's backtest Top10 drives the dividend-yield hysteresis.
+- `--bank-mode structured_only` (default) skips the bank report gate and scores banks on the common factors, renormalized, because historical bank report metrics are not cached. `--bank-mode metrics_file --bank-metrics-file PATH` applies a prepared bank metrics file.
+- Outcomes: dividend cut rate (a fiscal-year comparable DPS below 95% of the prior year, or no cash dividend, within the next two fiscal years), three-year realized DPS growth, equal-weight total return held to the next rebalance date against 中证红利全收益 (`H00922.CSI`) and 沪深300全收益 (`H00300.CSI`), and turnover. Only fiscal years complete by `--asof` are evaluated.
+- Raw history is cached once per security under `{data_root}/a_dividend_backtest/raw/{asof}/`; `--offline` reruns from that cache. Results go to `{data_root}/a_dividend_backtest/runs/{run_id}/` with `report.md`, `summary.csv`, `outcomes.csv`, per-period candidates and Top10, and `manifest.json` recording the code identity. Runs refuse a dirty working tree unless `--allow-dirty` is given.
+- Known limits: industry classification and main-business text are current, not historical; no trading costs.
+
+Never present a backtest Top10 as a formal result.
+
 ## Outputs
 
 Write under `{data_root}/a_dividend_outputs/{YYYYMMDD}/`:

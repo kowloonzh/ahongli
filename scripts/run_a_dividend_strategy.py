@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 import requests
@@ -1237,13 +1237,27 @@ def audit_opinion_gate(audit_result: Any) -> dict[str, Any]:
     return {"passed": passed, "status": "passed" if passed else "hard_gate_failed", "reason": f"审计意见={result}"}
 
 
-def weighted_quality_score(row: dict[str, Any]) -> dict[str, Any]:
+def default_factor_weights() -> dict[str, dict[str, float]]:
+    return {
+        "bank": BANK_FACTOR_WEIGHTS,
+        "financial": FINANCIAL_FACTOR_WEIGHTS,
+        "nonfinancial": NONFINANCIAL_FACTOR_WEIGHTS,
+    }
+
+
+def scoring_group(row: dict[str, Any]) -> str:
     if bool(row.get("is_bank")):
-        weights = BANK_FACTOR_WEIGHTS
-    elif bool(row.get("is_financial")):
-        weights = FINANCIAL_FACTOR_WEIGHTS
-    else:
-        weights = NONFINANCIAL_FACTOR_WEIGHTS
+        return "bank"
+    if bool(row.get("is_financial")):
+        return "financial"
+    return "nonfinancial"
+
+
+def weighted_quality_score(
+    row: dict[str, Any],
+    factor_weights: dict[str, dict[str, float]] | None = None,
+) -> dict[str, Any]:
+    weights = (factor_weights or default_factor_weights())[scoring_group(row)]
     contributions: dict[str, float] = {}
     missing: list[str] = []
     for factor, weight in weights.items():
@@ -1357,16 +1371,16 @@ def _ranking_source(factor: str) -> str:
     return FACTOR_SOURCE_FIELDS.get(factor, factor)
 
 
-def score_cross_section(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def score_cross_section(
+    rows: list[dict[str, Any]],
+    factor_weights: dict[str, dict[str, float]] | None = None,
+) -> list[dict[str, Any]]:
     frame = pd.DataFrame(rows)
     if frame.empty:
         return []
+    weights_by_group = factor_weights or default_factor_weights()
     frame = prepare_scoring_inputs(frame)
-    factors = sorted(
-        set(NONFINANCIAL_FACTOR_WEIGHTS)
-        | set(FINANCIAL_FACTOR_WEIGHTS)
-        | set(BANK_FACTOR_WEIGHTS)
-    )
+    factors = sorted(set().union(*(set(weights) for weights in weights_by_group.values())))
     frame["_scoring_group"] = "nonfinancial"
     frame.loc[frame["is_financial"].fillna(False).astype(bool), "_scoring_group"] = "financial"
     if "is_bank" in frame.columns:
@@ -1374,11 +1388,7 @@ def score_cross_section(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result_frames: list[pd.DataFrame] = []
     for group_name, group in frame.groupby("_scoring_group", sort=False):
         scored = group.copy()
-        applicable = {
-            "bank": BANK_FACTOR_WEIGHTS,
-            "financial": FINANCIAL_FACTOR_WEIGHTS,
-            "nonfinancial": NONFINANCIAL_FACTOR_WEIGHTS,
-        }[group_name]
+        applicable = weights_by_group[group_name]
         if group_name == "financial":
             # Other-financial can be a one-company cohort after the dividend
             # preflight (currently only 中国平安). Keep its distinct weight
@@ -1396,7 +1406,7 @@ def score_cross_section(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 scored[percentile_field] = reference.loc[scored.index, percentile_field]
             result_frames.append(scored)
             continue
-        if group_name == "bank":
+        if group_name == "bank" and any(factor.startswith("bank_") for factor in applicable):
             _build_bank_composite_percentiles(scored)
         for factor in factors:
             if factor not in applicable:
@@ -1417,7 +1427,7 @@ def score_cross_section(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
     records = combined.to_dict("records")
     for record in records:
-        score = weighted_quality_score(record)
+        score = weighted_quality_score(record, weights_by_group)
         record.update(score)
         for factor, contribution in score["score_contributions"].items():
             record[f"{factor}_score_contribution"] = contribution
@@ -1889,6 +1899,23 @@ def structured_factor_record_from_frames(
     return record
 
 
+INCOME_FIELDS = "ts_code,ann_date,f_ann_date,end_date,report_type,n_income_attr_p,update_flag"
+BALANCE_FIELDS = (
+    "ts_code,ann_date,f_ann_date,end_date,report_type,total_liab,"
+    "total_hldr_eqy_exc_min_int,st_borr,lt_borr,bond_payable,"
+    "non_cur_liab_due_1y,update_flag"
+)
+DIVIDEND_FIELDS = (
+    "ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,"
+    "cash_div_tax,record_date,ex_date,pay_date,imp_ann_date,base_date,base_share"
+)
+FINA_INDICATOR_FIELDS = "ts_code,ann_date,end_date,profit_dedt,update_flag"
+CASHFLOW_FIELDS = (
+    "ts_code,ann_date,f_ann_date,end_date,report_type,n_cashflow_act,"
+    "c_pay_acq_const_fiolta,update_flag"
+)
+
+
 def fetch_structured_source_frames(
     client,
     ts_code: str,
@@ -1903,17 +1930,13 @@ def fetch_structured_source_frames(
         ts_code=ts_code,
         start_date=start_date,
         end_date=cutoff,
-        fields="ts_code,ann_date,f_ann_date,end_date,report_type,n_income_attr_p,update_flag",
+        fields=INCOME_FIELDS,
     )
     balance_data = client.balancesheet(
         ts_code=ts_code,
         start_date=start_date,
         end_date=cutoff,
-        fields=(
-            "ts_code,ann_date,f_ann_date,end_date,report_type,total_liab,"
-            "total_hldr_eqy_exc_min_int,st_borr,lt_borr,bond_payable,"
-            "non_cur_liab_due_1y,update_flag"
-        ),
+        fields=BALANCE_FIELDS,
     )
     frames = {
         "income": dedupe_statement_rows(pd.DataFrame(income_data), cutoff),
@@ -1924,25 +1947,19 @@ def fetch_structured_source_frames(
 
     dividend_data = client.dividend(
         ts_code=ts_code,
-        fields=(
-            "ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,"
-            "cash_div_tax,record_date,ex_date,pay_date,imp_ann_date,base_date,base_share"
-        ),
+        fields=DIVIDEND_FIELDS,
     )
     fina_data = client.fina_indicator(
         ts_code=ts_code,
         start_date=start_date,
         end_date=cutoff,
-        fields="ts_code,ann_date,end_date,profit_dedt,update_flag",
+        fields=FINA_INDICATOR_FIELDS,
     )
     cashflow_data = client.cashflow(
         ts_code=ts_code,
         start_date=start_date,
         end_date=cutoff,
-        fields=(
-            "ts_code,ann_date,f_ann_date,end_date,report_type,n_cashflow_act,"
-            "c_pay_acq_const_fiolta,update_flag"
-        ),
+        fields=CASHFLOW_FIELDS,
     )
     audit_data = client.fina_audit(ts_code=ts_code, start_date=start_date, end_date=cutoff)
     frames.update(
@@ -2024,34 +2041,51 @@ def load_structured_factor_data(path: Path) -> dict[str, dict[str, Any]]:
     return records
 
 
-def ensure_structured_factor_data(
-    run_date: str,
-    market_dir: Path,
-    *,
-    skip_fetch: bool,
-    limit: int | None = None,
-    sleep_seconds: float = 0.2,
-    max_workers: int = 4,
-    pro=None,
-    prior_formal_top: dict[str, Any] | None = None,
-) -> dict[str, dict[str, Any]]:
-    constituents = pd.read_csv(market_dir / "constituents.csv", dtype=str).fillna("")
-    if limit:
-        constituents = constituents.head(limit)
-    expected_codes = constituents["ts_code"].astype(str).tolist()
-    path = market_dir / STRUCTURED_FACTORS_FILENAME
-    if skip_fetch:
-        cached = load_structured_factor_data(path)
-        missing = [code for code in expected_codes if code not in cached]
-        if missing:
-            raise RuntimeError(
-                f"缓存缺少{len(missing)}只成分股的结构化因子；请取消--skip-fetch刷新"
-            )
-        return {code: cached[code] for code in expected_codes}
+def market_profile_for(
+    ts_code: str,
+    daily: pd.DataFrame,
+    daily_basic: pd.DataFrame,
+    prior_formal_top: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Five-year price and dividend-yield profile plus the market preflight result."""
+    profile: dict[str, Any] = {"ts_code": ts_code}
+    profile.update(price_profile(daily))
+    profile.update(dividend_yield_profile(daily_basic))
+    apply_dividend_yield_hysteresis(profile, ts_code, prior_formal_top)
+    profile["market_preflight_passed"] = evaluate_market_dividend_preconditions(profile) is None
+    return profile
 
-    client = pro or tushare_pro()
-    market_profiles: dict[str, dict[str, Any]] = {}
-    market_passers: set[str] = set()
+
+def roe_stability_values(
+    common: dict[str, dict[str, pd.DataFrame] | Exception],
+) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for code, result in common.items():
+        if isinstance(result, Exception):
+            continue
+        roe_series = build_ttm_roe_series(result["income"], result["balance"])
+        latest_twelve = roe_series.sort_values("end_date").tail(12)
+        if len(latest_twelve) == 12:
+            values[code] = float(
+                pd.to_numeric(latest_twelve["ttm_roe"], errors="coerce").std(ddof=0)
+            )
+    return values
+
+
+def build_structured_factor_records(
+    run_date: str,
+    constituents: pd.DataFrame,
+    market_profiles: dict[str, dict[str, Any]],
+    common: dict[str, dict[str, pd.DataFrame] | Exception],
+    details: dict[str, dict[str, pd.DataFrame] | Exception],
+) -> list[dict[str, Any]]:
+    """Assemble structured gate records from as-of-date source frames.
+
+    ``common`` holds income/balance frames for every constituent (the ROE
+    stability cutoff is a cross-section statistic); ``details`` holds the
+    remaining frames for market-preflight passers only.
+    """
+    expected_codes = constituents["ts_code"].astype(str).tolist()
     industries: dict[str, str] = {}
     company_profiles: dict[str, dict[str, str]] = {}
     for _, item in constituents.iterrows():
@@ -2061,69 +2095,16 @@ def ensure_structured_factor_data(
             field: str(item.get(field, "") or "").strip()
             for field in COMPANY_PROFILE_FIELDS
         }
-        profile: dict[str, Any] = {"ts_code": code}
-        profile.update(price_profile(read_market_csv(market_dir, "daily", code)))
-        profile.update(dividend_yield_profile(read_market_csv(market_dir, "daily_basic", code)))
-        apply_dividend_yield_hysteresis(profile, code, prior_formal_top)
-        profile["market_preflight_passed"] = evaluate_market_dividend_preconditions(profile) is None
-        market_profiles[code] = profile
-        if profile["market_preflight_passed"]:
-            market_passers.add(code)
-
-    def fetch_common(code: str) -> tuple[str, dict[str, pd.DataFrame] | Exception]:
-        try:
-            frames = fetch_structured_source_frames_with_retry(
-                client,
-                code,
-                run_date,
-                include_candidate_details=False,
-            )
-            if sleep_seconds:
-                time.sleep(sleep_seconds)
-            return code, frames
-        except Exception as exc:  # preserve per-company data gaps instead of losing the full run
-            return code, exc
-
-    common: dict[str, dict[str, pd.DataFrame] | Exception] = {}
-    with ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
-        for code, result in executor.map(fetch_common, expected_codes):
-            common[code] = result
-
-    stability_values: dict[str, float] = {}
-    for code, result in common.items():
-        if isinstance(result, Exception):
-            continue
-        roe_series = build_ttm_roe_series(result["income"], result["balance"])
-        latest_twelve = roe_series.sort_values("end_date").tail(12)
-        if len(latest_twelve) == 12:
-            stability_values[code] = float(
-                pd.to_numeric(latest_twelve["ttm_roe"], errors="coerce").std(ddof=0)
-            )
+    market_passers = {
+        code for code, profile in market_profiles.items() if profile["market_preflight_passed"]
+    }
+    stability_values = roe_stability_values(common)
     cutoff = float(pd.Series(stability_values).quantile(0.80)) if stability_values else None
     stability_percentiles = (
         pd.Series(stability_values).rank(method="average", pct=True, ascending=True) * 100.0
         if stability_values
         else pd.Series(dtype=float)
     )
-
-    def fetch_detail(code: str) -> tuple[str, dict[str, pd.DataFrame] | Exception]:
-        try:
-            frames = fetch_structured_source_frames_with_retry(
-                client,
-                code,
-                run_date,
-                include_candidate_details=True,
-            )
-            if sleep_seconds:
-                time.sleep(sleep_seconds)
-            return code, frames
-        except Exception as exc:
-            return code, exc
-
-    details: dict[str, dict[str, pd.DataFrame] | Exception] = {}
-    with ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
-        for code, result in executor.map(fetch_detail, sorted(market_passers)):
-            details[code] = result
 
     records: list[dict[str, Any]] = []
     for code in expected_codes:
@@ -2182,6 +2163,93 @@ def ensure_structured_factor_data(
         record["roe_stability_percentile"] = finite_float(stability_percentiles.get(code))
         records.append(record)
 
+    return records
+
+
+def ensure_structured_factor_data(
+    run_date: str,
+    market_dir: Path,
+    *,
+    skip_fetch: bool,
+    limit: int | None = None,
+    sleep_seconds: float = 0.2,
+    max_workers: int = 4,
+    pro=None,
+    prior_formal_top: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    constituents = pd.read_csv(market_dir / "constituents.csv", dtype=str).fillna("")
+    if limit:
+        constituents = constituents.head(limit)
+    expected_codes = constituents["ts_code"].astype(str).tolist()
+    path = market_dir / STRUCTURED_FACTORS_FILENAME
+    if skip_fetch:
+        cached = load_structured_factor_data(path)
+        missing = [code for code in expected_codes if code not in cached]
+        if missing:
+            raise RuntimeError(
+                f"缓存缺少{len(missing)}只成分股的结构化因子；请取消--skip-fetch刷新"
+            )
+        return {code: cached[code] for code in expected_codes}
+
+    client = pro or tushare_pro()
+    market_profiles = {
+        str(item["ts_code"]): market_profile_for(
+            str(item["ts_code"]),
+            read_market_csv(market_dir, "daily", str(item["ts_code"])),
+            read_market_csv(market_dir, "daily_basic", str(item["ts_code"])),
+            prior_formal_top,
+        )
+        for _, item in constituents.iterrows()
+    }
+    market_passers = {
+        code for code, profile in market_profiles.items() if profile["market_preflight_passed"]
+    }
+
+    def fetch_common(code: str) -> tuple[str, dict[str, pd.DataFrame] | Exception]:
+        try:
+            frames = fetch_structured_source_frames_with_retry(
+                client,
+                code,
+                run_date,
+                include_candidate_details=False,
+            )
+            if sleep_seconds:
+                time.sleep(sleep_seconds)
+            return code, frames
+        except Exception as exc:  # preserve per-company data gaps instead of losing the full run
+            return code, exc
+
+    common: dict[str, dict[str, pd.DataFrame] | Exception] = {}
+    with ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
+        for code, result in executor.map(fetch_common, expected_codes):
+            common[code] = result
+
+    def fetch_detail(code: str) -> tuple[str, dict[str, pd.DataFrame] | Exception]:
+        try:
+            frames = fetch_structured_source_frames_with_retry(
+                client,
+                code,
+                run_date,
+                include_candidate_details=True,
+            )
+            if sleep_seconds:
+                time.sleep(sleep_seconds)
+            return code, frames
+        except Exception as exc:
+            return code, exc
+
+    details: dict[str, dict[str, pd.DataFrame] | Exception] = {}
+    with ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
+        for code, result in executor.map(fetch_detail, sorted(market_passers)):
+            details[code] = result
+
+    records = build_structured_factor_records(
+        run_date,
+        constituents,
+        market_profiles,
+        common,
+        details,
+    )
     pd.DataFrame(records).to_csv(path, index=False, encoding="utf-8-sig")
     return {str(record["ts_code"]): record for record in records}
 
@@ -2234,19 +2302,28 @@ def ensure_market_data(
 
 
 def build_candidate_rows(
-    market_dir: Path,
+    market_dir: Path | None,
     limit: int | None = None,
     structured_factors: dict[str, dict[str, Any]] | None = None,
     prior_formal_top: dict[str, Any] | None = None,
+    *,
+    constituents: pd.DataFrame | None = None,
+    frame_loader: Callable[[str, str], pd.DataFrame] | None = None,
+    factor_weights: dict[str, dict[str, float]] | None = None,
 ) -> list[dict[str, Any]]:
-    constituents = pd.read_csv(market_dir / "constituents.csv", dtype=str)
+    if constituents is None:
+        assert market_dir is not None
+        constituents = pd.read_csv(market_dir / "constituents.csv", dtype=str)
+    if frame_loader is None:
+        assert market_dir is not None
+        frame_loader = lambda prefix, code: read_market_csv(market_dir, prefix, code)
     if limit:
         constituents = constituents.head(limit)
     rows: list[dict[str, Any]] = []
     for _, item in constituents.iterrows():
         ts_code = str(item.get("ts_code", "")).strip()
-        daily = read_market_csv(market_dir, "daily", ts_code)
-        daily_basic = read_market_csv(market_dir, "daily_basic", ts_code)
+        daily = frame_loader("daily", ts_code)
+        daily_basic = frame_loader("daily_basic", ts_code)
         row: dict[str, Any] = {
             "ts_code": ts_code,
             "name": str(item.get("name", "")).strip(),
@@ -2268,7 +2345,9 @@ def build_candidate_rows(
         rows.append(row)
 
     scoring_input = [row for row in rows if bool(row.get("market_preflight_passed"))]
-    scored_by_code = {row["ts_code"]: row for row in score_cross_section(scoring_input)}
+    scored_by_code = {
+        row["ts_code"]: row for row in score_cross_section(scoring_input, factor_weights=factor_weights)
+    }
     finalized: list[dict[str, Any]] = []
     for row in rows:
         ts_code = row["ts_code"]

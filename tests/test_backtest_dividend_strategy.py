@@ -1,0 +1,214 @@
+import importlib.util
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS = ROOT / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+
+def load_module():
+    path = SCRIPTS / "backtest_dividend_strategy.py"
+    spec = importlib.util.spec_from_file_location("backtest_dividend_strategy", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def dividend_rows(per_year: dict[int, float], *, paid_month: str = "0715") -> pd.DataFrame:
+    rows = []
+    for year, dps in per_year.items():
+        date = f"{year + 1}{paid_month}"
+        rows.append(
+            {
+                "ts_code": "600000.SH",
+                "end_date": f"{year}1231",
+                "ann_date": date,
+                "div_proc": "实施",
+                "stk_div": 0.0,
+                "cash_div_tax": dps,
+                "record_date": date,
+                "ex_date": date,
+                "pay_date": date,
+                "imp_ann_date": date,
+                "base_share": 1000.0,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+class FakeClient:
+    def __init__(self):
+        self.calls = []
+
+    def daily(self, **kwargs):
+        self.calls.append(("daily", kwargs))
+        return pd.DataFrame({"ts_code": [kwargs["ts_code"]], "trade_date": ["20200102"], "close": [1.0]})
+
+    def fina_indicator(self, **kwargs):
+        self.calls.append(("fina_indicator", kwargs))
+        year = kwargs["start_date"][:4]
+        return pd.DataFrame({"ts_code": [kwargs["ts_code"]], "ann_date": [f"{year}0430"], "end_date": [f"{year}0331"]})
+
+
+class BacktestDividendStrategyTest(unittest.TestCase):
+    def test_statement_windows_cover_history_without_gaps(self):
+        module = load_module()
+
+        windows = module.statement_windows("20261102")
+
+        self.assertEqual(windows[0][0], f"{module.STATEMENT_HISTORY_START_YEAR}0101")
+        self.assertEqual(windows[-1][1], "20261102")
+        for (start, stop), (next_start, _) in zip(windows, windows[1:]):
+            self.assertEqual(int(next_start[:4]), int(stop[:4]) + 1)
+        for start, stop in windows:
+            self.assertLessEqual(int(stop[:4]) - int(start[:4]) + 1, module.STATEMENT_WINDOW_YEARS)
+
+    def test_store_fetches_once_pages_statements_and_refuses_offline_gaps(self):
+        module = load_module()
+        client = FakeClient()
+        with tempfile.TemporaryDirectory() as tmp:
+            store = module.RawStore(Path(tmp), "20261102", lambda: client, sleep_seconds=0)
+            first = store.frame("daily", "600000.SH")
+            reread = module.RawStore(Path(tmp), "20261102", lambda: client, sleep_seconds=0, offline=True)
+            second = reread.frame("daily", "600000.SH")
+            fina = store.frame("fina_indicator", "600000.SH")
+            with self.assertRaises(RuntimeError):
+                reread.frame("daily", "600036.SH")
+
+        self.assertEqual(sum(name == "daily" for name, _ in client.calls), 1)
+        self.assertEqual(first["trade_date"].tolist(), second["trade_date"].tolist())
+        self.assertIsInstance(second["trade_date"].iloc[0], str)
+        self.assertEqual(
+            sum(name == "fina_indicator" for name, _ in client.calls),
+            len(module.statement_windows("20261102")),
+        )
+        self.assertEqual(len(fina), len(module.statement_windows("20261102")))
+
+    def test_pit_statement_drops_unannounced_and_unended_periods(self):
+        module = load_module()
+        frame = pd.DataFrame(
+            {
+                "ts_code": ["A"] * 4,
+                "ann_date": ["20160428", "20160829", "20161028", "20170420"],
+                "f_ann_date": ["20160428", "20160829", "20161102", "20170420"],
+                "end_date": ["20160331", "20160630", "20160930", "20161231"],
+                "report_type": ["1"] * 4,
+                "n_income_attr_p": [1.0, 2.0, 3.0, 4.0],
+            }
+        )
+
+        result = module.pit_statement(frame, "20161101")
+
+        self.assertEqual(result["end_date"].tolist(), ["20160331", "20160630"])
+
+    def test_slice_market_keeps_five_years_ending_on_period(self):
+        module = load_module()
+        frame = pd.DataFrame({"trade_date": ["20101231", "20111025", "20161101", "20161102"], "close": [1, 2, 3, 4]})
+
+        result = module.slice_market(frame, "20161101")
+
+        self.assertEqual(result["trade_date"].tolist(), ["20111025", "20161101"])
+
+    def test_constituents_use_latest_snapshot_and_include_delisted(self):
+        module = load_module()
+
+        class Store:
+            def frame(self, interface, key="all"):
+                if interface == "index_weight":
+                    codes = [f"{index:06d}.SH" for index in range(300)]
+                    return pd.DataFrame(
+                        {
+                            "index_code": "000300.SH",
+                            "con_code": codes * 2,
+                            "trade_date": ["20160930"] * 300 + ["20161031"] * 300,
+                            "weight": [1.0] * 600,
+                        }
+                    )
+                if interface == "stock_basic":
+                    codes = [f"{index:06d}.SH" for index in range(300)]
+                    return pd.DataFrame(
+                        {
+                            "ts_code": codes,
+                            "name": codes,
+                            "industry": ["银行"] * 300,
+                            "list_status": ["D"] + ["L"] * 299,
+                            "delist_date": ["20190101"] + [""] * 299,
+                        }
+                    )
+                return pd.DataFrame()
+
+        result = module.period_constituents(Store(), "20161101")
+
+        self.assertEqual(len(result), 300)
+        self.assertEqual(set(result["trade_date"]), {"20161031"})
+        self.assertIn("000000.SH", set(result["ts_code"]))
+
+    def test_last_complete_fiscal_year_waits_for_final_dividends(self):
+        module = load_module()
+
+        self.assertEqual(module.last_complete_fiscal_year("20261102"), 2025)
+        self.assertEqual(module.last_complete_fiscal_year("20260601"), 2024)
+
+    def test_dividend_outcome_flags_cuts_and_zero_years(self):
+        module = load_module()
+
+        steady = module.dividend_outcome(dividend_rows({2014: 1.0, 2015: 1.0, 2016: 1.0, 2017: 1.02, 2018: 1.1}), 2015, "20261102")
+        cut = module.dividend_outcome(dividend_rows({2014: 1.0, 2015: 1.0, 2016: 0.9, 2017: 1.0}), 2015, "20261102")
+        stopped = module.dividend_outcome(dividend_rows({2014: 1.0, 2015: 1.0}), 2015, "20261102")
+        boundary = module.dividend_outcome(dividend_rows({2015: 1.0, 2016: 0.95, 2017: 0.95}), 2015, "20261102")
+
+        self.assertFalse(steady["cut"])
+        self.assertEqual(steady["cut_years_evaluated"], 2)
+        self.assertAlmostEqual(steady["dps_growth_3y"], 1.1 ** (1 / 3) - 1)
+        self.assertTrue(cut["cut"])
+        self.assertEqual(cut["cut_years"], "2016")
+        self.assertTrue(stopped["cut"])
+        self.assertEqual(stopped["cut_years"], "2016,2017")
+        self.assertEqual(stopped["dps_growth_3y"], -1.0)
+        self.assertFalse(boundary["cut"])
+
+    def test_dividend_outcome_skips_incomplete_windows_and_delisted(self):
+        module = load_module()
+        rows = dividend_rows({2023: 1.0, 2024: 1.0, 2025: 1.0})
+
+        partial = module.dividend_outcome(rows, 2024, "20261102")
+        unseen = module.dividend_outcome(rows, 2025, "20261102")
+        delisted = module.dividend_outcome(rows, 2023, "20261102", delist_date="20250301")
+
+        self.assertEqual(partial["cut_years_evaluated"], 1)
+        self.assertFalse(partial["cut"])
+        self.assertIsNone(partial["dps_growth_3y"])
+        self.assertIsNone(unseen["cut"])
+        self.assertIsNone(delisted["cut"])
+        self.assertTrue(delisted["delisted"])
+
+    def test_holding_return_holds_suspended_security_at_last_close(self):
+        module = load_module()
+        series = pd.Series([10.0, 11.0, 12.0], index=["20161031", "20170301", "20170601"])
+
+        self.assertAlmostEqual(module.holding_return(series, "20161101", "20171101"), 0.2)
+        self.assertIsNone(module.holding_return(series, "20160101", "20171101"))
+
+    def test_structured_only_bank_weights_drop_report_factors(self):
+        module = load_module()
+
+        weights = module.factor_weights_for("v1", "structured_only")
+        full = module.factor_weights_for("v1", "metrics_file")
+
+        self.assertFalse(any(factor.startswith("bank_") for factor in weights["bank"]))
+        self.assertAlmostEqual(sum(weights["bank"].values()), 1.0)
+        self.assertAlmostEqual(weights["bank"]["roe"], 0.30)
+        self.assertEqual(full["bank"], module.strategy.BANK_FACTOR_WEIGHTS)
+        self.assertEqual(weights["nonfinancial"], module.strategy.NONFINANCIAL_FACTOR_WEIGHTS)
+
+
+if __name__ == "__main__":
+    unittest.main()

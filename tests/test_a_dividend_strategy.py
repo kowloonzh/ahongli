@@ -1558,7 +1558,7 @@ class ADividendStrategyTest(unittest.TestCase):
             }
             scores = {item["ts_code"]: 90 - index for index, item in enumerate(constituents)}
 
-            def fake_score(rows):
+            def fake_score(rows, factor_weights=None):
                 return [{**row, "dividend_score_total": scores[row["ts_code"]]} for row in rows]
 
             with (
