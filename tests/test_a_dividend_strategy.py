@@ -788,6 +788,38 @@ class ADividendStrategyTest(unittest.TestCase):
         self.assertAlmostEqual(profile["annual_comparable_dps"][2025], 0.5)
         self.assertEqual(profile["annual_cash_dividend_total_yuan"][2024], 100_000_000)
 
+    def test_duplicate_implemented_rows_differing_only_by_ann_date_count_once(self):
+        # Tushare returns 南京银行 FY2023 实施 twice (ann_date 20240427 and 20240521).
+        module = load_module()
+        def event(end_date, ann_date, cash, imp, record, base_share=1_034_375.0):
+            return {
+                "ts_code": "601009.SH", "end_date": end_date, "ann_date": ann_date,
+                "div_proc": "实施", "cash_div_tax": cash, "base_share": base_share,
+                "record_date": record, "ex_date": record, "pay_date": record, "imp_ann_date": imp,
+            }
+        rows = [
+            event("20211231", "20220507", 0.46, "20220609", "20220616"),
+            event("20221231", "20230429", 0.5339, "20230615", "20230620"),
+            event("20221231", "20230520", 0.5339, "20230615", "20230620"),
+            event("20231231", "20240427", 0.5367, "20240607", "20240613"),
+            event("20231231", "20240521", 0.5367, "20240607", "20240613"),
+            event("20240630", "20240903", 0.34626, "20241025", "20241031"),
+            event("20240630", "20240903", 0.34626, "20241025", "20241031"),
+            event("20241231", "20250422", 0.19931, "20250617", "20250620"),
+            event("20241231", "20250517", 0.19931, "20250617", "20250620"),
+            # Two genuinely distinct interim and final events in one fiscal year still add up.
+            event("20250630", "20251028", 0.3062, "20251114", "20251119"),
+            event("20251231", "20260516", 0.22295, "20260605", "20260612"),
+        ]
+
+        profile = module.dividend_history_profile(pd.DataFrame(rows), "20261101")
+
+        self.assertAlmostEqual(profile["annual_raw_dps"][2023], 0.5367)
+        self.assertAlmostEqual(profile["annual_raw_dps"][2024], 0.34626 + 0.19931)
+        self.assertAlmostEqual(profile["annual_raw_dps"][2025], 0.3062 + 0.22295)
+        self.assertAlmostEqual(profile["annual_cash_dividend_total_yuan"][2023], 0.5367 * 1_034_375.0 * 10_000)
+        self.assertGreater(profile["latest_dps_to_prior3_median"], 0.95)
+
     def test_explicit_no_dividend_does_not_allow_anchor_year_fallback(self):
         module = load_module()
         dividends = pd.DataFrame(

@@ -4,7 +4,7 @@
 
 Use a single `dividend_anchor_year` across payout, continuity, recent-cut, and CAGR calculations. Prefer the latest completed fiscal year when its status is determined. If it is merely not implemented yet, fall back one year only. An explicit no-dividend decision anchors that year at zero and cannot be bypassed.
 
-Keep only implemented cash events available by `run_date`. Use tax-inclusive `cash_div_tax`; ignore implemented stock-only events. Sum interim, special, and final cash events by fiscal `end_date`.
+Keep only implemented cash events available by `run_date`. Use tax-inclusive `cash_div_tax`; ignore implemented stock-only events. Sum interim, special, and final cash events by fiscal `end_date`. Before summing, drop Tushare rows that repeat the same event and differ only by `ann_date` (identical fiscal period, progress, cash/stock amounts, base share, record/ex/pay dates, and implementation announcement date); summing such duplicates doubles DPS and cash totals.
 
 Cash-dividend total is `cash_div_tax * base_share * 10000`. A verified record-date total-share fallback is allowed only when `base_share` is missing and must be identified as fallback evidence.
 

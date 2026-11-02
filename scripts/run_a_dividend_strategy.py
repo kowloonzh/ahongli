@@ -726,6 +726,38 @@ def evaluate_market_dividend_preconditions(row: dict[str, Any]) -> str | None:
     return None
 
 
+DIVIDEND_EVENT_IDENTITY_FIELDS = [
+    "ts_code",
+    "end_date",
+    "div_proc",
+    "cash_div_tax",
+    "stk_div",
+    "stk_bo_rate",
+    "stk_co_rate",
+    "base_share",
+    "record_date",
+    "ex_date",
+    "pay_date",
+    "imp_ann_date",
+]
+
+
+def dedupe_dividend_events(dividends: pd.DataFrame) -> pd.DataFrame:
+    """Drop Tushare rows that repeat one event and differ only by ann_date.
+
+    Tushare can return the same implemented distribution twice with different
+    announcement dates. Summing both doubles the fiscal-year DPS and cash total,
+    falsely failing the recent-cut gate and distorting payout, coverage and CAGR.
+    """
+    if dividends.empty:
+        return dividends
+    fields = [field for field in DIVIDEND_EVENT_IDENTITY_FIELDS if field in dividends.columns]
+    if not fields:
+        return dividends
+    key = dividends[fields].astype(str).replace({"nan": "", "None": "", "NaN": "", "<NA>": ""})
+    return dividends.loc[~key.duplicated(keep="first")]
+
+
 def _implemented_cash_dividend_events(dividends: pd.DataFrame, run_date: str) -> pd.DataFrame:
     """Normalize implemented Tushare cash-dividend events available by run date."""
     if dividends.empty or "cash_div_tax" not in dividends.columns:
@@ -775,6 +807,7 @@ def dividend_history_profile(
 ) -> dict[str, Any]:
     """Build one auditable, tax-inclusive dividend history on a comparable-share basis."""
     explicit_zero = set(explicit_no_dividend_years or set())
+    dividends = dedupe_dividend_events(dividends)
     run_year = datetime.strptime(compact_date(run_date), "%Y%m%d").year
     latest_complete_year = run_year - 1
     events = _implemented_cash_dividend_events(dividends, run_date)
