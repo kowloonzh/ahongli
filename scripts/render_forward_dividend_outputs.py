@@ -35,9 +35,14 @@ FORWARD_FIELDS = [
     "forecast_uncertainty", "forecast_status", "forecast_reason",
     "forecast_profit_low", "forecast_profit", "forecast_profit_high",
     "forecast_payout_ratio_low", "forecast_payout_ratio", "forecast_payout_ratio_high",
-    "forecast_total_shares", "announced_dividend_floor",
+    "forecast_total_shares", "forecast_cash_cap_total", "forecast_cash_cap_dps",
+    "forecast_cash_cap_total_low", "forecast_cash_cap_total_base", "forecast_cash_cap_total_high",
+    "forecast_cash_cap_dps_low", "forecast_cash_cap_dps_base", "forecast_cash_cap_dps_high",
+    "forecast_insurance_constraints", "announced_dividend_floor",
     "special_dividend_excluded", "forecast_input_fact_ids", "forecast_input_event_ids",
     "forecast_selection_decisions",
+    "forecast_history", "forecast_ttm_cfo", "forecast_ttm_capex",
+    "forecast_fcf_dividend_coverage", "forecast_ttm_bridge", "forecast_assumptions",
     "evidence_detail_path",
 ]
 
@@ -136,7 +141,10 @@ def _write_detail(
         "",
         "## 下一次派息",
         "",
-        f"- 日期状态：`{row.get('next_dividend_date_status', 'not_announced')}`",
+        "公司派息安排包含运行日当天，以及已除息但尚未到发放日的事件；不代表运行日新买入者享有该次分红。",
+        "领取资格按股权登记日判断；所示日期表示公告安排，不确认实际到账。未来12个月权益另按行情快照日计算。",
+        "",
+        f"- 日期状态：`{row.get('next_dividend_date_status', 'no_upcoming_payment')}`",
         f"- 股权登记日：{_display_date(row.get('next_dividend_record_date'))}",
         f"- 除权除息日：{_display_date(row.get('next_dividend_ex_date'))}",
         f"- 下次现金红利发放日：{format_next_dividend_payment(row)}",
@@ -154,6 +162,33 @@ def _write_detail(
                 "```",
             ]
         )
+    if row.get("forecast_history"):
+        lines.extend(["", "## 三年常规现金派息率", "",
+                      "| 财年 | 归母利润（元） | 全年常规现金（元） | 常规DPS | 派息率 | CFO覆盖 |",
+                      "|---|---:|---:|---:|---:|---:|"])
+        for h in row["forecast_history"]:
+            lines.append(f"| {h['year']} | {_number(h['profit'])} | {_number(h['regular_cash'])} | "
+                         f"{_number(h['annual_dps'], 4)} | {_percent(h['payout_ratio'])} | {_number(h['cfo_dividend_coverage'])} |")
+        lines.extend(["", "## TTM计算与现金流约束", "",
+                      "TTM = 上年全年 − 上年同期 + 本年同期；下列数值单位为元。", "",
+                      "```json", json.dumps(row.get("forecast_ttm_bridge", {}), ensure_ascii=False, indent=2), "```", "",
+                      f"- TTM CFO：{_number(row.get('forecast_ttm_cfo'))}",
+                      f"- TTM 资本开支：{_number(row.get('forecast_ttm_capex'))}",
+                      f"- 自由现金流代理/基准分红：{_number(row.get('forecast_fcf_dividend_coverage'), 4)}", ""])
+        lines.extend(f"- {assumption}" for assumption in row.get("forecast_assumptions", []))
+        lines.extend(["", "完整分期金额与去重、冲突、截止日选择记录随 CSV 的 forecast_history / forecast_selection_decisions 导出。"])
+    if row.get("forecast_insurance_constraints"):
+        lines.extend([
+            "", "## 保险资本与母公司资金约束", "",
+            "```json",
+            json.dumps(row.get("forecast_insurance_constraints"), ensure_ascii=False, indent=2),
+            "```", "",
+            f"- 母公司非融资现金金额上限：{_number(row.get('forecast_cash_cap_total'))}",
+            f"- 对应每股现金上限：{_number(row.get('forecast_cash_cap_dps'), 4)}",
+            f"- 低/基准/高每股现金上限：{_number(row.get('forecast_cash_cap_dps_low'), 4)} / "
+            f"{_number(row.get('forecast_cash_cap_dps_base'), 4)} / {_number(row.get('forecast_cash_cap_dps_high'), 4)}",
+        ])
+        lines.extend(f"- {assumption}" for assumption in row.get("forecast_assumptions", []))
     lines.extend([
         "",
         "## 预期股息率与目标区间",
@@ -252,6 +287,7 @@ def render_forward_dividend_outputs(
         f"# AHongli 前瞻分红观察表 {run_date}",
         "",
         "前瞻分红严格后置，不改变正式排名和综合得分。目标股息率由要求总回报率减可持续分红增长率得到，不是投资建议。",
+        "下次派息日为公司公告发放安排，包含当日及已除息但尚未到发放日的事件，不代表当日新买入可领取，也不确认实际到账。",
         "",
         "| 排名 | 公司 | 得分 | 股价 | 预期分红 | 预期股息率 | 下次派息日 | 当前位置 | 目标股息率区间 | 目标价格区间 |",
         "|---:|---|---:|---:|---:|---:|---|---|---:|---:|",
@@ -292,6 +328,7 @@ def render_forward_dividend_outputs(
 body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#f5f7fa;color:#172033}}header,main{{padding:24px 32px}}header{{background:#12344d;color:#fff}}table{{width:100%;border-collapse:collapse;background:#fff}}th,td{{padding:9px;border-bottom:1px solid #e5e7eb;font-size:12px;text-align:left}}th{{background:#eef3f7}}a{{color:#0b63a5}}small{{color:#64748b}}
 </style></head><body><header><h1>AHongli 前瞻分红观察表</h1><p>{html.escape(run_date)}｜正式排名与得分不变</p></header><main>
 <p>目标股息率区间用于统一观察投入门槛；证据和计算过程保存在公司详情页。</p>
+<p>下次派息日为公司公告发放安排，包含当日及已除息但尚未到发放日的事件，不代表当日新买入可领取，也不确认实际到账。</p>
 <table><thead><tr><th>排名</th><th>公司</th><th>得分</th><th>股价</th><th>预期分红</th><th>预期股息率</th><th>下次派息日</th><th>当前位置</th><th>目标股息率区间</th><th>目标价格区间</th></tr></thead><tbody>{''.join(body)}</tbody></table>
 </main></body></html>"""
     _atomic_write(html_path, document)

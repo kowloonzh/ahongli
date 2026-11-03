@@ -192,38 +192,105 @@ def forecast_company(
     industry = str(company.get("industry") or "")
     insurance_required = ["operating_profit_scenarios", "official_payout_ratio", "forecast_total_shares"]
     if "保险" in industry and all(facts.get(field) is not None for field in insurance_required):
-        dps = compute_dps_scenarios(
-            profit_scenarios=facts["operating_profit_scenarios"],
-            payout_ratio=float(facts["official_payout_ratio"]),
-            forecast_total_shares=float(facts["forecast_total_shares"]),
+        safety = facts.get("insurance_safety") or {}
+        payout_scenarios = facts.get("payout_ratio_scenarios")
+        required_safety = [
+            "group_core_solvency_ratio", "group_comprehensive_solvency_ratio",
+            "stressed_core_solvency_ratio", "stressed_comprehensive_solvency_ratio",
+            "material_subsidiary_min_core_solvency_ratio",
+            "material_subsidiary_min_comprehensive_solvency_ratio",
+            "parent_available_funds_end",
+        ]
+        missing_safety = [
+            field for field in required_safety
+            if safety.get(field) in {None, "", "未取得"}
+        ]
+        if not safety.get("gate_passed") or not safety.get("parent_funds_bridge_reconciled"):
+            missing_safety.append("保险正式安全门槛或母公司资金桥接")
+        if not payout_scenarios:
+            missing_safety.append("低/基准/高派息率情景")
+        if missing_safety:
+            return {
+                "forecast_fiscal_year": facts.get("forecast_fiscal_year"),
+                "forecast_fy_regular_dps_low": None,
+                "forecast_fy_regular_dps_base": None,
+                "forecast_fy_regular_dps_high": None,
+                "forecast_method": facts.get("payout_method", "policy_derived"),
+                "model_id": "insurance_operating_profit_cash_capital_v3",
+                "model_version": "3",
+                "evidence_completeness": "missing",
+                "forecast_uncertainty": "not_estimable",
+                "forecast_status": "data_gap",
+                "forecast_reason": "保险前瞻安全约束缺少：" + "、".join(dict.fromkeys(missing_safety)),
+                "forecast_input_fact_ids": facts.get("forecast_input_fact_ids", []),
+                "forecast_input_event_ids": facts.get("forecast_input_event_ids", []),
+                "forecast_selection_decisions": facts.get("forecast_selection_decisions", []),
+                "forecast_insurance_constraints": safety,
+            }
+        shares = float(facts["forecast_total_shares"])
+        available_funds = float(safety["parent_available_funds_end"])
+        financing_value = safety.get("parent_financing_proceeds")
+        financing = 0.0 if financing_value in {None, "", "未取得"} else float(financing_value)
+        non_financing_cash_cap = max(0.0, available_funds - financing)
+        funding_need_value = safety.get("parent_subsidiary_investments")
+        funding_need_reference = (
+            0.0 if funding_need_value in {None, "", "未取得"} else max(0.0, float(funding_need_value))
         )
+        cash_caps = {
+            "low": max(0.0, non_financing_cash_cap - funding_need_reference),
+            "base": non_financing_cash_cap,
+            "high": non_financing_cash_cap,
+        }
+        cash_cap_dps = {scenario: value / shares for scenario, value in cash_caps.items()}
+        dps = {}
+        announced_floor = float(facts.get("announced_dividend_floor") or 0)
+        for scenario in ["low", "base", "high"]:
+            unconstrained = (
+                float(facts["operating_profit_scenarios"][scenario])
+                * float(payout_scenarios[scenario])
+                / shares
+            )
+            dps[scenario] = max(announced_floor, min(unconstrained, cash_cap_dps[scenario]))
+        assumptions = [
+            "各压力情景按公司原始披露单独检查，未合并利率与权益冲击",
+            "偿付能力百分比仅作为监管底线约束，未在缺少分红后资本影响证据时换算资本金额上限",
+            "现金上限使用期末母公司可动用资金扣除当期融资所得，融资不计入持续分红覆盖",
+            "低情景另保留最近完整年度已披露的对子公司投资金额，反映资金需求上升；未把该研究缓冲设为正式淘汰门槛",
+        ]
         return {
             "forecast_fiscal_year": facts.get("forecast_fiscal_year"),
             "forecast_fy_regular_dps_low": dps["low"],
             "forecast_fy_regular_dps_base": dps["base"],
             "forecast_fy_regular_dps_high": dps["high"],
             "forecast_method": facts.get("payout_method", "policy_derived"),
-            "model_id": (
-                "insurance_operating_profit_historical_payout_v2"
-                if facts.get("payout_method") == "historical_payout"
-                else "insurance_operating_profit_policy_v1"
-            ),
-            "model_version": "2" if facts.get("payout_method") == "historical_payout" else "1",
+            "model_id": "insurance_operating_profit_cash_capital_v3",
+            "model_version": "3",
             "evidence_completeness": facts.get("evidence_completeness", "complete"),
             "forecast_uncertainty": "high" if facts.get("payout_method") == "historical_payout" else "medium",
             "forecast_status": "modelled",
             "forecast_reason": (
-                "三年原始证据派息率中位数与营运利润情景"
+                "三年原始证据派息率情景、营运利润情景、母公司非融资现金上限与保险资本门槛"
                 if facts.get("payout_method") == "historical_payout"
-                else "正式股东回报政策与营运利润情景"
+                else "正式股东回报政策、历史派息率情景、营运利润情景、母公司非融资现金上限与保险资本门槛"
             ),
             "forecast_profit": facts["operating_profit_scenarios"]["base"],
             "forecast_profit_low": facts["operating_profit_scenarios"]["low"],
             "forecast_profit_high": facts["operating_profit_scenarios"]["high"],
-            "forecast_payout_ratio": float(facts["official_payout_ratio"]),
-            "forecast_payout_ratio_low": float(facts["official_payout_ratio"]),
-            "forecast_payout_ratio_high": float(facts["official_payout_ratio"]),
-            "forecast_total_shares": float(facts["forecast_total_shares"]),
+            "forecast_payout_ratio": float(payout_scenarios["base"]),
+            "forecast_payout_ratio_low": float(payout_scenarios["low"]),
+            "forecast_payout_ratio_high": float(payout_scenarios["high"]),
+            "forecast_total_shares": shares,
+            "forecast_cash_cap_total": non_financing_cash_cap,
+            "forecast_cash_cap_dps": cash_cap_dps["base"],
+            "forecast_cash_cap_total_low": cash_caps["low"],
+            "forecast_cash_cap_total_base": cash_caps["base"],
+            "forecast_cash_cap_total_high": cash_caps["high"],
+            "forecast_cash_cap_dps_low": cash_cap_dps["low"],
+            "forecast_cash_cap_dps_base": cash_cap_dps["base"],
+            "forecast_cash_cap_dps_high": cash_cap_dps["high"],
+            "announced_dividend_floor": announced_floor or None,
+            "forecast_insurance_constraints": safety,
+            "forecast_assumptions": assumptions,
             "forecast_input_fact_ids": facts.get("forecast_input_fact_ids", []),
             "forecast_input_event_ids": facts.get("forecast_input_event_ids", []),
             "forecast_selection_decisions": facts.get("forecast_selection_decisions", []),
@@ -282,17 +349,11 @@ def forecast_company(
                 if is_bank and facts.get("payout_method") == "historical_payout"
                 else "bank_profit_policy_capital_v1"
                 if is_bank
-                else "regular_historical_payout_v1"
-                if facts.get("payout_method") == "historical_payout"
                 else "regular_profit_policy_v1"
             ),
             "model_version": "1",
             "evidence_completeness": facts.get("evidence_completeness", "complete"),
-            "forecast_uncertainty": (
-                "high"
-                if not is_bank and facts.get("payout_method") == "historical_payout"
-                else "medium"
-            ),
+            "forecast_uncertainty": "medium",
             "forecast_status": "modelled",
             "forecast_reason": (
                 "正式派息下限作为低情景、三年实际派息率作为基准情景并检查资本约束"
@@ -300,8 +361,6 @@ def forecast_company(
                 else
                 "三年原始证据派息率中位数、可复算利润情景与资本约束"
                 if is_bank and facts.get("payout_method") == "historical_payout"
-                else "无正式派息下限，采用三年原始证据派息率中位数与可复算利润情景"
-                if facts.get("payout_method") == "historical_payout"
                 else "正式派息政策与可复算利润情景"
             ),
             "forecast_profit": facts["forecast_profit_scenarios"]["base"],
@@ -328,7 +387,10 @@ def forecast_company(
             "evidence_completeness": "missing",
             "forecast_uncertainty": "not_estimable",
             "forecast_status": "data_gap",
-            "forecast_reason": "缺少强制事实：" + "、".join(missing),
+            "forecast_reason": "缺少强制事实：" + "、".join(missing) + (
+                "；" + str(facts["payout_gap_reason"])
+                if "official_payout_ratio" in missing and facts.get("payout_gap_reason") else ""
+            ),
             "forecast_input_fact_ids": facts.get("forecast_input_fact_ids", []),
             "forecast_input_event_ids": facts.get("forecast_input_event_ids", []),
         }

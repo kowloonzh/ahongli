@@ -177,7 +177,7 @@ class RunForwardDividendAnalysisTest(unittest.TestCase):
                 top10_path=top10,
                 output_dir=out,
                 client=Client(),
-                download_bytes=lambda url: b"pdf bytes",
+                download_bytes=lambda url: b"%PDF-1.4 pdf bytes",
                 page_provider=lambda document, _: [{"page": 1, "text": texts[document["announcement_id"]]}],
             )
 
@@ -225,7 +225,7 @@ class RunForwardDividendAnalysisTest(unittest.TestCase):
 
             result = module.run_forward_analysis(
                 run_date="20260902", top10_path=top10, output_dir=out,
-                client=Client(), download_bytes=lambda url: b"pdf", page_provider=pages,
+                client=Client(), download_bytes=lambda url: b"%PDF-1.4 pdf", page_provider=pages,
             )
 
             self.assertEqual(result["status"]["status"], "partial")

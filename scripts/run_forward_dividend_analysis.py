@@ -140,6 +140,7 @@ def run_forward_analysis(
     top10_path: Path,
     output_dir: Path,
     skip_prepare: bool = False,
+    refresh_documents: bool = False,
     client=None,
     download_bytes=None,
     page_provider=None,
@@ -147,6 +148,8 @@ def run_forward_analysis(
     risk_free_rate_date: str = DEFAULT_RISK_FREE_RATE_DATE,
     risk_free_rate_source: str = DEFAULT_RISK_FREE_RATE_SOURCE,
 ) -> dict[str, Any]:
+    if skip_prepare and refresh_documents:
+        raise ValueError("refresh_documents cannot be combined with skip_prepare")
     top10_path = Path(top10_path).resolve()
     output_dir = Path(output_dir).resolve()
     market_dir = output_dir / "market_data"
@@ -175,6 +178,7 @@ def run_forward_analysis(
                 evidence_root=evidence_root,
                 client=client,
                 download_bytes=download_bytes,
+                refresh_documents=refresh_documents,
             )
             for row in rows:
                 manifest = evidence_root / str(row["ts_code"]) / "manifest.json"
@@ -271,6 +275,13 @@ def run_forward_analysis(
             "input_top10_sha256": before_sha,
             "input_top10_mtime_ns": before_mtime,
             "counts": counts,
+            "pdf_cache": {
+                "mode": "skipped" if skip_prepare else "prepare",
+                **{state: (0 if skip_prepare else sum(
+                    d.get("cache_status") == state
+                    for company in evidence.values() for d in company.get("source_documents", [])
+                )) for state in ["reused", "downloaded"]},
+            },
             "outputs": {name: str(path) for name, path in outputs.items()},
         }
         _atomic_json(market_dir / "forward-dividend-run-status.json", run_status)
@@ -294,6 +305,7 @@ def main() -> int:
     parser.add_argument("--top10", required=True, type=Path)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--skip-prepare", action="store_true")
+    parser.add_argument("--refresh-documents", action="store_true", help="Bypass verified PDF cache; re-download selected documents")
     parser.add_argument("--risk-free-rate", type=float, default=DEFAULT_RISK_FREE_RATE)
     parser.add_argument("--risk-free-rate-date", default=DEFAULT_RISK_FREE_RATE_DATE)
     parser.add_argument("--risk-free-rate-source", default=DEFAULT_RISK_FREE_RATE_SOURCE)
@@ -304,6 +316,7 @@ def main() -> int:
         top10_path=args.top10,
         output_dir=output_dir,
         skip_prepare=args.skip_prepare,
+        refresh_documents=args.refresh_documents,
         risk_free_rate=args.risk_free_rate,
         risk_free_rate_date=args.risk_free_rate_date,
         risk_free_rate_source=args.risk_free_rate_source,

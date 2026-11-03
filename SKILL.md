@@ -13,6 +13,8 @@ Read [references/strategy-spec.md](references/strategy-spec.md) before changing 
 
 Read [references/bank-metrics.md](references/bank-metrics.md) when collecting or evaluating bank-specific asset-quality, margin, provision, or regulatory-capital metrics. These metrics are part of the formal bank hard gates and score.
 
+Read [references/insurance-metrics.md](references/insurance-metrics.md) when collecting or evaluating insurer solvency, parent-company cash, subsidiary remittances, stress sensitivity, or forward DPS. Insurance safety gates are formal; insurance scoring remains in the other-financial model until point-in-time history supports separate weights.
+
 ## Required Skill
 
 Use `$tushare` for constituents, company profiles, market history, dividends, financial statements, audit results, and all structured evidence. This strategy does not consume subjective `financial-report-reader` analysis reports. Bank-only NPL, provision, NIM, efficiency, and regulatory-capital metrics are parsed deterministically from original annual reports.
@@ -72,6 +74,7 @@ Hard gates do not contribute points:
 - rule v2 (default), nonfinancial companies only: latest annual EBIT / interest expense at least 3 (net debt at or below zero passes outright; a blank Tushare `ebit_to_interest` falls back to income-statement EBIT / interest expense; missing both is `data_gap`);
 - rule v2 (default), nonfinancial companies only: latest annual `profit_dedt` at most twice its 10-year median (cross-cycle gate against cyclical profit peaks; fewer than eight annual observations is not judged);
 - banks additionally require three complete audited annual observations for all eight bank metrics, latest NPL ratio at most 2%, provision coverage at least 150%, actual loan provision ratio at least 1.5%, core Tier-1 capital at least 7.5%, Tier-1 capital at least 8.5%, and total capital adequacy at least 10.5%.
+- insurers additionally require three complete annual observations and the latest available periodic disclosure; clear group and material-subsidiary entity binding; group and material-subsidiary core solvency at least 50% and comprehensive solvency at least 100%; no disclosed C/D risk rating or explicit regulatory dividend restriction; and the same regulatory floors under each issuer-disclosed standalone group stress. Do not combine independent stresses.
 
 There is no company-quality category gate.
 
@@ -93,6 +96,8 @@ Dividend record, ranked across all structured-gate passers regardless of group (
 - consecutive dividend years, capped at 15;
 - comparable-DPS cuts in the last 10 fiscal years (a year below 95% of the prior year, or no dividend; fewer is better);
 - five-year comparable DPS CAGR.
+
+Insurance companies continue to use the other-financial weights after passing the insurance safety gate. Run `simulate_insurance_scoring.py` for point-in-time research; do not activate separate formal insurance weights unless the research sample contains enough issuers and subsequent DPS-cut events.
 
 Operating quality, ranked within group:
 
@@ -131,6 +136,18 @@ For a standalone batch repair:
 python3 scripts/prepare_bank_metrics.py \
   --output data/a_dividend_outputs/YYYYMMDD/market_data/bank_quality_metrics.csv \
   --as-of-date YYYYMMDD --bank-codes 600036.SH 601398.SH
+```
+
+## Insurance Metrics Preparation
+
+For every market-preflight insurance company, the main runner prepares `market_data/insurance_quality_metrics.csv` from original issuer reports available by the run date. It keeps insurance-group, group-parent and material-subsidiary facts separate; retains the latest three complete annual reports plus the latest available interim/quarterly report; and stores page excerpts, announcement IDs, extractor version and stable evidence IDs. Shared files live in `{data_root}/_insurance_report_cache`.
+
+The parent cash bridge distinguishes fiscal-year DPS from cash actually paid in the period. Subsidiary remittances and ending available funds are reported as coverage fields; financing remains visible but never counts as operating dividend coverage. Missing subjects, periods, stresses, bridge reconciliation or required capital values is `data_gap` and stops formal ranking.
+
+```bash
+python3 scripts/prepare_insurance_metrics.py \
+  --output data/a_dividend_outputs/YYYYMMDD/market_data/insurance_quality_metrics.csv \
+  --as-of-date YYYYMMDD --insurance-codes 601318.SH
 ```
 
 ## Run
@@ -226,22 +243,28 @@ python3 scripts/run_forward_dividend_analysis.py \
 
 After the run status, the command prints a compact A-share Top10 main table to stdout with only the formal rank, company, score, A-share quote, base forecast DPS, expected yield, next payment date, target position, target-yield range, and target-price range. The persisted CSV and per-company detail remain the auditable sources of truth for model inputs, DPS scenarios, dividend-event dates, evidence completeness, and uncertainty.
 
-Both the main CLI and the default `run_pipeline()` API print the standard forward Top10 table immediately after forward analysis completes. When reporting a completed run to the user, reproduce this standard ten-column table without dropping or reordering columns: rank, company, score, A-share quote, base forecast DPS, expected dividend yield, next payment date, target position, target-yield range, and target-price range. The payment column shows the exact `next_dividend_payment_date` only when formally evidenced, `待实施公告` for a current dividend plan without implementation dates, and `—` when no qualifying event exists. Never estimate an exact payment date from historical cadence. Keep record and ex-dividend dates plus event/source IDs in CSV and company detail instead of expanding the main table. Do not replace the standard table with a narrower hand-built or Rich table. Additional commentary may follow it.
+Both the main CLI and the default `run_pipeline()` API print the standard forward Top10 table immediately after forward analysis completes. When reporting a completed run to the user, reproduce this standard ten-column table without dropping or reordering columns: rank, company, score, A-share quote, base forecast DPS, expected dividend yield, next payment date, target position, target-yield range, and target-price range. The payment column is the issuer's calendar: select the earliest implemented regular A-share CNY payment with `payment_date >= run_date`, even if already ex-dividend. Show only `YYYY-MM-DD` for both `payment_today` and future `scheduled` payments, `待实施公告` for `pending_implementation`, and `—` for `no_upcoming_payment`. The displayed date describes an announced schedule, not confirmed receipt. Do not label an already-announced payment `not_announced` merely because its ex-date has passed. Keep this calendar separate from `forward_12m_eligible_dps`, which retains its quote-date/ex-dividend entitlement rules. Never estimate an exact payment date from historical cadence. Keep record and ex-dividend dates plus event/source IDs in CSV and company detail instead of expanding the main table. Do not replace the standard table with a narrower hand-built or Rich table. Additional commentary may follow it.
 
 Use `--skip-prepare` only when every applicable Top10 evidence directory already contains a validated `forecast-evidence.json`. Forward results use independent `announced`, `modelled`, `data_gap`, `unsupported`, and `failed` states. Missing or unsupported forecasts keep numeric columns empty and retain the original formal rank and score.
 
 Resolve each Top10 company's CNinfo `orgId` from the vendored `assets/stocks.json` and `assets/forward_stocks.json` first. For any code missing there, fall back to CNinfo's public A-share list, archived per run as `market_data/cninfo_stock_list.json` and reused on later runs for the same date, so a new Top10 entrant is never left without evidence. An evidence stage that ends in `data_gap` (for example no mapping, no documents) is reported as forecast `data_gap` with its reason, never as `unsupported`.
 
-When a company has no formal payout floor in force for the forecast year, every industry may fall back to the median of the latest three evidenced annual regular payout ratios applied to the recomputable TTM profit scenarios. A non-financial fallback uses `regular_historical_payout_v1` with `forecast_uncertainty = high`; a formal floor, when present, always takes precedence.
+Normal preparation still queries current announcements and applies cutoff/revision selection, but checks PDF caches before downloading. Reuse SHA-256-verified PDFs from `{data_root}/_forward_report_cache/`, the current run, or prior dated forward manifests, keyed by issuer, announcement ID and source URL. Existing historical files remain untouched; populate the shared cache lazily and copy verified bytes into each self-contained run. `cache_status=reused` means no PDF network download; `downloaded` means a network fetch, while `storage_status` describes file writes. Preserve original `retrieved_at` separately from `cache_checked_at`, and report `pdf_cache` counts from run status. PDF changes or damaged page JSON invalidate extracted-text reuse. `--refresh-documents` on the standalone forward runner explicitly bypasses PDF reuse; never combine it with `--skip-prepare`. This PDF cache does not implement cross-date Tushare financial-data reuse.
 
 The forward stage writes separate CSV, Markdown, HTML, run-status, source, fact, event, result, and per-company evidence artifacts. Derive the target-yield range as required total return minus sustainable dividend growth, using a dated risk-free rate and versioned industry risk/growth parameters. Never infer the target range from current price, current yield, or historical yield percentiles. Display only neutral target-position labels; the corresponding target-price range is a mechanical DPS/yield conversion, not intrinsic value or an investment instruction.
 
 Every successful run must write `market_data/forward-dividend-replay-manifest.json` plus the exact policy snapshot. The manifest records the real Git commit when the skill root is a clean checkout, otherwise a deterministic packaged runtime-tree SHA-256; it also records runner parameters, Top10 hash, per-company evidence and original source-document hashes, policy hash, and forward CSV hash. Verify an archived run offline with `python3 scripts/forward_replay.py --manifest <path>`; hash mismatch, code mismatch, or any recomputed CSV field mismatch fails verification.
+
+Insurance uses `insurance_operating_profit_cash_capital_v3`. Low/base/high each have separate operating-profit and payout assumptions. DPS is limited by group-parent ending available funds net of disclosed financing; the low cash scenario also reserves the latest complete annual subsidiary-investment amount as an evidenced higher-funding-need case. Solvency ratios remain pass/fail constraints unless original evidence supports a post-dividend capital amount. An announced current-year interim regular dividend is a floor. Missing insurance safety or cash evidence returns `data_gap`; the forward transaction never edits the formal rank.
 
 Each normalized fact references a stable `evidence_span_id`; each span retains the source document ID, page, raw excerpt, and extractor version. Persist low/base/high profit and payout inputs plus fact-selection decisions. After actual regular DPS is disclosed, use `evaluate_forecast_accuracy.py` to retain signed/absolute error, relative error, range coverage, and model version.
 
 Bank and insurance target-yield ranges add a 0.5 percentage-point safety margin to the lower bound only. Equivalently, use a 6.8% risk-spread lower bound instead of 6.3% for both categories, while retaining the 8.3% upper bound; for example, `5%–7%` becomes `5.5%–7%` and `6%–8%` becomes `6.5%–8%`. Do not apply this adjustment to telecom, utilities, or other non-bank, non-insurance companies.
 
 Bind payout evidence to complete fiscal years. A full-year DPS that already includes an interim dividend must not be added to that interim dividend again, and a historical restatement footnote must not be assigned to the current report year. When a bank policy provides only a payout floor and three complete annual actual payout ratios are available, use the floor for the low scenario, the three-year median for the base scenario, and the three-year maximum for the high scenario, subject to the existing capital checks.
+
+Policy retrieval must cover both `分红回报规划` and `股东回报规划`. A policy based on three-year average distributable profit, cash as a share of total distributions, or distributions including buybacks is not an annual cash-dividend/parent-profit ratio. Retain its basis as `payout_policy_constraint` and explain the model limitation; never substitute that percentage for cash payout. Profit and cashflow extraction must reject year headers, page numbers, adjacent metrics, and quarterly breakdowns as annual/comparable values. Historical payout tables keep the row year, not the enclosing report year.
+
+The narrowly supported `nonfinancial_historical_payout_v1` is available after an existing model returns `data_gap` or `unsupported`, initially only for formally selected, standard-audit nonfinancial `家用电器` / `家电` companies. Before using or changing it, read [the model contract](references/nonfinancial-history-model.md). It requires three consecutive complete fiscal years of original-document cash dividends and parent profit, latest comparable interim profit, eligible all-ordinary share capital, and CFO/capex evidence. Reconcile implemented interim/final gross DPS to annual total; do not mix A-only cash with group profit or double-count interim dividends. Missing, future-dated, conflicting, or insufficient cashflow evidence leaves DPS empty. This is a high-uncertainty historical model, not an official payout policy or universal fallback; never tune it to a blogger's DPS. Persist the annual history, TTM bridge, source/fact choices, coverage, and assumptions. Target-yield policy remains independently versioned and unchanged by this model.
 
 AHongli is an A-share strategy. Forward outputs must use the formal `.SH` / `.SZ` instrument, A-share pre-tax DPS, and CNY quote/dividend currency. Never mix H-share or HKD dividends into A-share forward yield or twelve-month eligible DPS. Consolidated profit may use all ordinary shares as the forecast denominator when the distribution applies to all ordinary shares, but record that explicitly as `forecast_share_denominator_scope=all_ordinary_shares`.

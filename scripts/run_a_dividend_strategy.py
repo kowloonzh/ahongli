@@ -35,6 +35,7 @@ MIN_DIVIDEND_YIELD_DATA_COVERAGE = 0.80
 TOP_CANDIDATE_COUNT = 10
 STRUCTURED_FACTORS_FILENAME = "structured_factors.csv"
 BANK_METRICS_FILENAME = "bank_quality_metrics.csv"
+INSURANCE_METRICS_FILENAME = "insurance_quality_metrics.csv"
 MIN_BANK_LOAN_PROVISION_RATIO = 1.5
 DIVIDEND_YIELD_THRESHOLD = 3.0
 DIVIDEND_YIELD_ENTRY_RATIO = 0.80
@@ -135,6 +136,7 @@ CSV_FIELDS = [
     "industry",
     "is_financial",
     "is_bank",
+    "is_insurance",
     "weight",
     "current_price",
     "price_date",
@@ -236,6 +238,41 @@ CSV_FIELDS = [
     "bank_cost_income_ratio",
     "bank_cost_income_ratio_percentile",
     "bank_cost_income_ratio_score_contribution",
+    "insurance_quality_data_quality",
+    "insurance_quality_gate_passed",
+    "insurance_quality_gate_status",
+    "insurance_quality_gate_reason",
+    "insurance_metrics_start_period",
+    "insurance_metrics_latest_period",
+    "insurance_group_core_capital",
+    "insurance_group_actual_capital",
+    "insurance_group_minimum_capital",
+    "insurance_group_core_solvency_ratio",
+    "insurance_group_comprehensive_solvency_ratio",
+    "insurance_stressed_core_solvency_ratio",
+    "insurance_stressed_comprehensive_solvency_ratio",
+    "insurance_material_subsidiary_min_core_solvency_ratio",
+    "insurance_material_subsidiary_min_comprehensive_solvency_ratio",
+    "insurance_parent_available_funds_start",
+    "insurance_parent_available_funds_end",
+    "insurance_parent_subsidiary_dividends_received",
+    "insurance_parent_external_dividends_paid",
+    "insurance_parent_subsidiary_investments",
+    "insurance_parent_financing_proceeds",
+    "insurance_parent_other_cashflows",
+    "insurance_parent_funds_bridge_residual",
+    "insurance_parent_funds_bridge_reconciled",
+    "insurance_subsidiary_dividend_coverage",
+    "insurance_ending_available_funds_coverage",
+    "insurance_financing_share_of_external_dividends",
+    "insurance_operating_profit_parent",
+    "insurance_operating_profit_payout_ratio",
+    "insurance_risk_comprehensive_rating",
+    "insurance_regulatory_dividend_restriction",
+    "insurance_material_subsidiaries_json",
+    "insurance_stress_scenarios_json",
+    "insurance_metric_evidence_json",
+    "insurance_source_documents_json",
     "data_quality",
     "data_quality_reason",
 ]
@@ -1593,6 +1630,247 @@ def is_bank_industry(industry: Any) -> bool:
     return "银行" in str(industry or "")
 
 
+def is_insurance_industry(industry: Any) -> bool:
+    return "保险" in str(industry or "")
+
+
+def _json_value(value: Any, default: Any) -> Any:
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        parsed = json.loads(str(value or ""))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return default
+    return parsed if isinstance(parsed, type(default)) else default
+
+
+def insurance_quality_profile(records: list[dict[str, Any]]) -> dict[str, Any]:
+    frame = pd.DataFrame(records)
+    gap = {
+        "insurance_quality_data_quality": "data_gap",
+        "insurance_quality_gate_passed": False,
+        "insurance_quality_gate_status": "data_gap",
+        "insurance_quality_gate_reason": "缺少保险最近3年及最新期间专项指标",
+    }
+    if frame.empty or "period" not in frame.columns:
+        return gap
+    frame["_period"] = frame["period"].astype(str).str.replace(r"\D", "", regex=True).str[:8]
+    frame = frame[frame["_period"].str.fullmatch(r"\d{8}", na=False)].sort_values("_period")
+    report_types = frame["report_type"] if "report_type" in frame.columns else pd.Series("", index=frame.index)
+    annual = frame[report_types.astype(str).eq("annual")].drop_duplicates("_period", keep="last").tail(3)
+    if len(annual) != 3:
+        return {**gap, "insurance_quality_gate_reason": "保险专项指标缺少最近3个完整年度"}
+    annual_years = [int(str(period)[:4]) for period in annual["_period"]]
+    if annual_years != list(range(annual_years[-1] - 2, annual_years[-1] + 1)):
+        return {**gap, "insurance_quality_gate_reason": "保险专项指标最近3个完整年度不连续"}
+    latest = frame.iloc[-1]
+    latest_annual = annual.iloc[-1]
+    cash_row = latest if finite_float(latest.get("parent_available_funds_end")) is not None else latest_annual
+    quality_bad = (
+        not annual.get("data_quality", pd.Series(dtype=str)).astype(str).eq("normal").all()
+        or str(latest.get("data_quality") or "") != "normal"
+    )
+    required_latest = [
+        "group_core_capital", "group_actual_capital", "group_minimum_capital",
+        "group_core_solvency_ratio", "group_comprehensive_solvency_ratio",
+    ]
+    missing = [field for field in required_latest if finite_float(latest.get(field)) is None]
+    subsidiaries = _json_value(latest.get("material_subsidiaries_json"), [])
+    if not subsidiaries:
+        subsidiaries = _json_value(latest_annual.get("material_subsidiaries_json"), [])
+    stresses = _json_value(latest.get("stress_scenarios_json"), [])
+    if not stresses:
+        missing.append("最新披露的独立偿付能力压力情景")
+    if not subsidiaries:
+        missing.append("主要保险子公司偿付能力")
+    if quality_bad or missing:
+        reason = "保险专项指标缺少或口径冲突：" + "、".join(dict.fromkeys(missing or ["原始解析质量"]))
+        return {**gap, "insurance_quality_gate_reason": reason}
+
+    group_core = float(latest["group_core_solvency_ratio"])
+    group_comprehensive = float(latest["group_comprehensive_solvency_ratio"])
+    group_stresses = [
+        item for item in stresses
+        if "集团" in str(item.get("reporting_entity") or "")
+    ]
+    stressed_core = min(
+        [group_core, *[
+            group_core + float(item.get("core_change_pct_points") or 0)
+            for item in group_stresses
+        ]]
+    )
+    stressed_comprehensive = min(
+        [group_comprehensive, *[
+            group_comprehensive + float(item.get("comprehensive_change_pct_points") or 0)
+            for item in group_stresses
+        ]]
+    )
+    subsidiary_core = [
+        finite_float(item.get("core_solvency_ratio")) for item in subsidiaries
+    ]
+    subsidiary_comprehensive = [
+        finite_float(item.get("comprehensive_solvency_ratio")) for item in subsidiaries
+    ]
+    if any(value is None for value in subsidiary_core + subsidiary_comprehensive):
+        return {**gap, "insurance_quality_gate_reason": "主要保险子公司偿付能力指标不完整"}
+
+    evidence = {
+        str(row["_period"]): _json_value(row.get("metric_evidence_json"), {})
+        for _, row in frame.iterrows()
+    }
+    sources = [
+        {
+            "period": str(row["_period"]),
+            "report_type": str(row.get("report_type") or ""),
+            "available_date": str(row.get("available_date") or ""),
+            "source_document_id": str(row.get("source_document_id") or ""),
+            "source_file": str(row.get("source_file") or ""),
+            "source_original_file": str(row.get("source_original_file") or ""),
+            "source_sha256": str(row.get("source_sha256") or ""),
+            "extracted_text_sha256": str(row.get("extracted_text_sha256") or ""),
+        }
+        for _, row in frame.iterrows()
+    ]
+    result = {
+        "insurance_quality_data_quality": "normal",
+        "insurance_metrics_start_period": str(annual.iloc[0]["_period"]),
+        "insurance_metrics_latest_period": str(latest["_period"]),
+        "insurance_group_core_capital": finite_float(latest.get("group_core_capital")),
+        "insurance_group_actual_capital": finite_float(latest.get("group_actual_capital")),
+        "insurance_group_minimum_capital": finite_float(latest.get("group_minimum_capital")),
+        "insurance_group_core_solvency_ratio": group_core,
+        "insurance_group_comprehensive_solvency_ratio": group_comprehensive,
+        "insurance_stressed_core_solvency_ratio": stressed_core,
+        "insurance_stressed_comprehensive_solvency_ratio": stressed_comprehensive,
+        "insurance_material_subsidiary_min_core_solvency_ratio": min(float(v) for v in subsidiary_core),
+        "insurance_material_subsidiary_min_comprehensive_solvency_ratio": min(float(v) for v in subsidiary_comprehensive),
+        "insurance_parent_available_funds_start": finite_float(cash_row.get("parent_available_funds_start")),
+        "insurance_parent_available_funds_end": finite_float(cash_row.get("parent_available_funds_end")),
+        "insurance_parent_subsidiary_dividends_received": finite_float(cash_row.get("parent_subsidiary_dividends_received")),
+        "insurance_parent_external_dividends_paid": finite_float(cash_row.get("parent_external_dividends_paid")),
+        "insurance_parent_subsidiary_investments": (
+            finite_float(cash_row.get("parent_subsidiary_investments"))
+            if finite_float(cash_row.get("parent_subsidiary_investments")) is not None
+            else finite_float(latest_annual.get("parent_subsidiary_investments"))
+        ),
+        "insurance_parent_financing_proceeds": finite_float(cash_row.get("parent_financing_proceeds")),
+        "insurance_parent_other_cashflows": finite_float(cash_row.get("parent_other_cashflows")),
+        "insurance_parent_funds_bridge_residual": finite_float(cash_row.get("parent_funds_bridge_residual")),
+        "insurance_parent_funds_bridge_reconciled": str(cash_row.get("parent_funds_bridge_reconciled")).lower() in {"true", "1", "是"},
+        "insurance_subsidiary_dividend_coverage": finite_float(cash_row.get("subsidiary_dividend_coverage")),
+        "insurance_ending_available_funds_coverage": finite_float(cash_row.get("ending_available_funds_coverage")),
+        "insurance_financing_share_of_external_dividends": finite_float(cash_row.get("financing_share_of_external_dividends")),
+        "insurance_operating_profit_parent": finite_float(latest_annual.get("operating_profit_parent")),
+        "insurance_operating_profit_payout_ratio": finite_float(latest_annual.get("operating_profit_payout_ratio")),
+        "insurance_risk_comprehensive_rating": str(latest.get("risk_comprehensive_rating") or ""),
+        "insurance_regulatory_dividend_restriction": str(latest.get("regulatory_dividend_restriction") or ""),
+        "insurance_material_subsidiaries_json": json.dumps(subsidiaries, ensure_ascii=False, sort_keys=True),
+        "insurance_stress_scenarios_json": json.dumps(stresses, ensure_ascii=False, sort_keys=True),
+        "insurance_metric_evidence_json": json.dumps(evidence, ensure_ascii=False, sort_keys=True),
+        "insurance_source_documents_json": json.dumps(sources, ensure_ascii=False, sort_keys=True),
+    }
+    failures: list[str] = []
+    if group_core < 50 or group_comprehensive < 100:
+        failures.append("保险集团偿付能力低于监管底线")
+    if min(float(v) for v in subsidiary_core) < 50 or min(float(v) for v in subsidiary_comprehensive) < 100:
+        failures.append("主要保险子公司偿付能力低于监管底线")
+    if stressed_core < 50 or stressed_comprehensive < 100:
+        failures.append("公司披露的单项压力情景下集团偿付能力低于监管底线")
+    rating = str(latest.get("risk_comprehensive_rating") or "").upper().strip()
+    if rating and rating[0] in {"C", "D"}:
+        failures.append(f"风险综合评级{rating}低于B类")
+    restriction = str(latest.get("regulatory_dividend_restriction") or "").strip().lower()
+    if restriction in {"true", "1", "是", "yes"}:
+        failures.append("存在明确的监管分红限制")
+    if not result["insurance_parent_funds_bridge_reconciled"]:
+        return {
+            **result,
+            "insurance_quality_data_quality": "data_gap",
+            "insurance_quality_gate_passed": False,
+            "insurance_quality_gate_status": "data_gap",
+            "insurance_quality_gate_reason": "母公司可动用资金收支桥接无法与期末余额核对",
+        }
+    result["insurance_quality_gate_passed"] = not failures
+    result["insurance_quality_gate_status"] = "passed" if not failures else "hard_gate_failed"
+    result["insurance_quality_gate_reason"] = (
+        "通过保险集团、主要保险子公司及公司披露单项压力情景的监管偿付能力底线；母公司资金桥接已核对"
+        if not failures else "；".join(failures)
+    )
+    return result
+
+
+def load_insurance_quality_profiles(
+    path: Path, required_codes: set[str],
+) -> dict[str, dict[str, Any]]:
+    if not path.exists() or path.stat().st_size == 0:
+        raise RuntimeError(f"缺少保险专项指标缓存：{path}")
+    frame = pd.read_csv(path, dtype=str).fillna("")
+    profiles: dict[str, dict[str, Any]] = {}
+    for code in sorted(required_codes):
+        records = frame[frame["ts_code"].astype(str).eq(code)].to_dict("records")
+        profiles[code] = {
+            "ts_code": code,
+            "is_insurance": True,
+            **insurance_quality_profile(records),
+        }
+    gaps = [
+        code for code, profile in profiles.items()
+        if profile["insurance_quality_data_quality"] != "normal"
+    ]
+    if gaps:
+        raise RuntimeError("保险专项指标缓存不完整：" + "、".join(gaps))
+    return profiles
+
+
+def _load_insurance_metrics_preparer():
+    script = Path(__file__).with_name("prepare_insurance_metrics.py")
+    if not script.exists():
+        raise RuntimeError(f"缺少保险专项自动准备脚本：{script}")
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("prepare_insurance_metrics", script)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.prepare_insurance_metrics_cache
+
+
+def ensure_insurance_quality_profiles(
+    path: Path, required_codes: set[str], run_date: str, *, preparer=None,
+) -> dict[str, dict[str, Any]]:
+    try:
+        return load_insurance_quality_profiles(path, required_codes)
+    except RuntimeError:
+        prepare_cache = preparer or _load_insurance_metrics_preparer()
+        prepare_cache(
+            output_path=path,
+            insurance_codes=required_codes,
+            as_of_date=compact_date(run_date),
+        )
+        return load_insurance_quality_profiles(path, required_codes)
+
+
+def merge_insurance_quality_gate(
+    structured: dict[str, Any], insurance_profile: dict[str, Any],
+) -> dict[str, Any]:
+    merged = {
+        **structured, **insurance_profile,
+        "is_insurance": True, "is_financial": True, "is_bank": False,
+    }
+    if not bool(structured.get("structured_gate_passed")):
+        return merged
+    if bool(insurance_profile.get("insurance_quality_gate_passed")):
+        return merged
+    merged["structured_gate_passed"] = False
+    status = str(insurance_profile.get("insurance_quality_gate_status") or "data_gap")
+    merged["structured_gate_status"] = status
+    merged["structured_gate_reason"] = str(
+        insurance_profile.get("insurance_quality_gate_reason") or "保险专项硬门槛未通过"
+    )
+    return merged
+
+
 def bank_quality_profile(records: list[dict[str, Any]]) -> dict[str, Any]:
     frame = pd.DataFrame(records)
     required = [
@@ -1883,6 +2161,7 @@ def structured_factor_record_from_frames(
         "introduction": introduction,
         "is_financial": financial,
         "is_bank": is_bank_industry(industry),
+        "is_insurance": is_insurance_industry(industry),
         "market_preflight_passed": bool(market_preflight_passed),
         **{key: value for key, value in dividend.items() if not key.startswith("annual_")},
         "three_year_average_payout_ratio": payout["three_year_average_payout_ratio"],
@@ -2371,7 +2650,10 @@ def ensure_market_data(
     max_workers: int = 4,
     data_root: Path | str | None = None,
 ) -> Path:
-    out = output_dir(run_date, data_root=data_root)
+    out = (
+        Path(data_root).expanduser().absolute() / OUTPUT_ROOT_NAME / compact_date(run_date)
+        if data_root is not None else output_dir(run_date, data_root=data_root)
+    )
     market = out / "market_data"
     if skip_fetch:
         constituents_path = market / "constituents.csv"
@@ -2626,6 +2908,41 @@ def v2_gate_exclusions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def escape_financial_safety(row: dict[str, Any]) -> str:
+    if row.get("is_insurance"):
+        return (
+            f"保险{row.get('insurance_quality_gate_status', 'data_gap')}；"
+            f"集团{fmt_num(row.get('insurance_group_core_solvency_ratio'))}%/"
+            f"{fmt_num(row.get('insurance_group_comprehensive_solvency_ratio'))}%；"
+            f"压力后{fmt_num(row.get('insurance_stressed_core_solvency_ratio'))}%/"
+            f"{fmt_num(row.get('insurance_stressed_comprehensive_solvency_ratio'))}%；"
+            f"子公司最低{fmt_num(row.get('insurance_material_subsidiary_min_core_solvency_ratio'))}%/"
+            f"{fmt_num(row.get('insurance_material_subsidiary_min_comprehensive_solvency_ratio'))}%；"
+            f"上缴覆盖{fmt_num(row.get('insurance_subsidiary_dividend_coverage'))}倍；"
+            f"{row.get('insurance_quality_gate_reason', '')}"
+        )
+    if row.get("is_bank"):
+        return f"银行{row.get('bank_quality_gate_status', '')}"
+    return "—"
+
+
+def insurance_audit_lines(rows: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    insurance_rows = [row for row in rows if row.get("is_insurance")]
+    if insurance_rows:
+        lines.extend(["", "## 保险专项审计", "", "| 公司 | 状态 | 集团核心/综合 | 压力后核心/综合 | 子公司最低核心/综合 | 子公司上缴覆盖 | 期末资金覆盖 | 原因 |", "|---|---|---:|---:|---:|---:|---:|---|"])
+        for row in insurance_rows:
+            lines.append(
+                f"| {row.get('name','')} | {row.get('insurance_quality_gate_status','')} | "
+                f"{fmt_num(row.get('insurance_group_core_solvency_ratio'))}% / {fmt_num(row.get('insurance_group_comprehensive_solvency_ratio'))}% | "
+                f"{fmt_num(row.get('insurance_stressed_core_solvency_ratio'))}% / {fmt_num(row.get('insurance_stressed_comprehensive_solvency_ratio'))}% | "
+                f"{fmt_num(row.get('insurance_material_subsidiary_min_core_solvency_ratio'))}% / {fmt_num(row.get('insurance_material_subsidiary_min_comprehensive_solvency_ratio'))}% | "
+                f"{fmt_num(row.get('insurance_subsidiary_dividend_coverage'))} | {fmt_num(row.get('insurance_ending_available_funds_coverage'))} | "
+                f"{str(row.get('insurance_quality_gate_reason','')).replace('|','/')} |"
+            )
+    return lines
+
+
 def write_markdown(
     rows: list[dict[str, Any]],
     run_date: str,
@@ -2661,8 +2978,8 @@ def write_markdown(
     if rule_version == "v2":
         lines.extend(
             [
-                "| 排名 | 全量排名 | 公司 | 代码 | 总分 | 分红记录分 | 经营质量分 | 主营业务 | ROE | DROE | 三年FCF覆盖 | 连续分红年数 | 10年DPS削减次数 | 五年DPS CAGR | 扣非/10年中位数 |",
-                "|---:|---:|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|",
+                "| 排名 | 全量排名 | 公司 | 代码 | 总分 | 分红记录分 | 经营质量分 | 主营业务 | ROE | DROE | 三年FCF覆盖 | 连续分红年数 | 10年DPS削减次数 | 五年DPS CAGR | 扣非/10年中位数 | 金融专项安全 |",
+                "|---:|---:|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---|",
             ]
         )
         for row in top:
@@ -2672,7 +2989,7 @@ def write_markdown(
                 f"{str(row.get('main_business', ''))[:40]} | {fmt_num(row.get('roe'))} | {fmt_num(row.get('droe'))} | "
                 f"{fmt_num(row.get('fcf_dividend_coverage_3y'))} | {row.get('consecutive_dividend_years', '')} | "
                 f"{row.get('dps_cut_count_10y', '')} | {fmt_num((finite_float(row.get('dps_cagr_5y')) or 0) * 100)}% | "
-                f"{fmt_num(row.get('profit_dedt_to_10y_median'))} |"
+                f"{fmt_num(row.get('profit_dedt_to_10y_median'))} | {escape_financial_safety(row)} |"
             )
         excluded = v2_gate_exclusions(rows)
         lines.extend(["", "## v2 门槛排除", ""])
@@ -2684,13 +3001,14 @@ def write_markdown(
                 )
         else:
             lines.append("本期没有公司仅因 v2 新增门槛落选。")
+        lines.extend(insurance_audit_lines(rows))
         lines.extend(["", "## 全量审计", "", "完整300只股票、所有硬门槛值、因子百分位、权重贡献和落选原因见同目录CSV与HTML。"])
         path.write_text("\n".join(lines), encoding="utf-8")
         return
     lines.extend(
         [
-            "| 排名 | 全量排名 | 公司 | 代码 | 总分 | 主营业务 | ROE | DROE | OPCFD | 三年FCF覆盖 | 股息率CV | 连续分红年数 | 五年DPS CAGR |",
-            "|---:|---:|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|",
+            "| 排名 | 全量排名 | 公司 | 代码 | 总分 | 主营业务 | ROE | DROE | OPCFD | 三年FCF覆盖 | 股息率CV | 连续分红年数 | 五年DPS CAGR | 金融专项安全 |",
+            "|---:|---:|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---|",
         ]
     )
     for row in top:
@@ -2699,8 +3017,10 @@ def write_markdown(
             f"{fmt_num(row.get('dividend_score_total'))} | {str(row.get('main_business', ''))[:40]} | "
             f"{fmt_num(row.get('roe'))} | {fmt_num(row.get('droe'))} | {fmt_num(row.get('opcfd'), 4)} | "
             f"{fmt_num(row.get('fcf_dividend_coverage_3y'))} | {fmt_num(row.get('dividend_yield_cv_5y'), 4)} | "
-            f"{row.get('consecutive_dividend_years', '')} | {fmt_num((finite_float(row.get('dps_cagr_5y')) or 0) * 100)}% |"
+            f"{row.get('consecutive_dividend_years', '')} | {fmt_num((finite_float(row.get('dps_cagr_5y')) or 0) * 100)}% | "
+            f"{escape_financial_safety(row)} |"
         )
+    lines.extend(insurance_audit_lines(rows))
     lines.extend(["", "## 全量审计", "", "完整300只股票、所有硬门槛值、因子百分位、权重贡献和落选原因见同目录CSV与HTML。"])
     path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -2731,6 +3051,7 @@ def write_html(
                 f"<td>{escape(str(row.get('dps_cut_count_10y','')))}</td>"
                 f"<td>{fmt_num((finite_float(row.get('dps_cagr_5y')) or 0)*100)}%</td>"
                 f"<td>{fmt_num(row.get('profit_dedt_to_10y_median'))}</td>"
+                f"<td>{escape(escape_financial_safety(row))}</td>"
                 f"<td>{escape(str(row.get('selection_status','')))}</td>"
                 f"<td>{escape(str(row.get('selected_reason','')))}</td></tr>"
             )
@@ -2746,16 +3067,17 @@ def write_html(
             f"<td>{fmt_num(row.get('dividend_yield_cv_5y'),4)}</td>"
             f"<td>{escape(str(row.get('consecutive_dividend_years','')))}</td>"
             f"<td>{fmt_num((finite_float(row.get('dps_cagr_5y')) or 0)*100)}%</td>"
+            f"<td>{escape(escape_financial_safety(row))}</td>"
             f"<td>{escape(str(row.get('selection_status','')))}</td>"
             f"<td>{escape(str(row.get('selected_reason','')))}</td></tr>"
         )
     selected_count = sum(row.get("selected") == "是" for row in rows)
     gate_note, scoring_note = rule_notes(rule_version)
     if rule_version == "v2":
-        header_cells = ["排名", "总分", "分红记录分", "经营质量分", "入选", "公司", "行业", "主营业务", "ROE", "DROE", "三年FCF覆盖", "连续分红年数", "10年DPS削减次数", "五年DPS CAGR", "扣非/10年中位数", "状态", "理由"]
+        header_cells = ["排名", "总分", "分红记录分", "经营质量分", "入选", "公司", "行业", "主营业务", "ROE", "DROE", "三年FCF覆盖", "连续分红年数", "10年DPS削减次数", "五年DPS CAGR", "扣非/10年中位数", "金融专项安全", "状态", "理由"]
         rule_paragraph = f"<p>评分规则 v2。{escape(gate_note)}</p><p>{escape(scoring_note)}</p>"
     else:
-        header_cells = ["排名", "总分", "入选", "公司", "行业", "主营业务", "ROE", "DROE", "OPCFD", "三年FCF覆盖", "股息率CV", "连续分红年数", "五年DPS CAGR", "状态", "理由"]
+        header_cells = ["排名", "总分", "入选", "公司", "行业", "主营业务", "ROE", "DROE", "OPCFD", "三年FCF覆盖", "股息率CV", "连续分红年数", "五年DPS CAGR", "金融专项安全", "状态", "理由"]
         rule_paragraph = "<p>市场预筛后执行支付率、TTM ROE稳定性、扣非利润、现金流覆盖、审计和主营范围硬门槛；银行另执行三年专项数据完整性、不良率、拨备和资本安全门槛，并使用独立评分模型。主营业务来自Tushare stock_company，直接地产主业排除。连续分红年数不封顶。</p>"
     header_html = "".join(f"<th>{cell}</th>" for cell in header_cells)
     html = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
@@ -2825,6 +3147,22 @@ def run_strategy(
             structured_factors[ts_code] = merge_bank_quality_gate(
                 structured_factors[ts_code],
                 bank_profile,
+            )
+    insurance_codes = {
+        ts_code
+        for ts_code, record in structured_factors.items()
+        if is_insurance_industry(record.get("industry"))
+        and bool(record.get("market_preflight_passed"))
+    }
+    if insurance_codes:
+        insurance_profiles = ensure_insurance_quality_profiles(
+            market_dir / INSURANCE_METRICS_FILENAME,
+            insurance_codes,
+            run_date,
+        )
+        for ts_code, insurance_profile in insurance_profiles.items():
+            structured_factors[ts_code] = merge_insurance_quality_gate(
+                structured_factors[ts_code], insurance_profile,
             )
     eligible_codes = {
         ts_code

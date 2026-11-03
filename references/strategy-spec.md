@@ -35,6 +35,8 @@ A non-standard latest annual audit opinion fails. Direct property development, s
 
 Banks must also have complete parsed values for the latest three audited annual reports. The latest NPL ratio must be at most 2%, provision coverage at least 150%, actual loan provision ratio at least 1.5% (the lower end of the regulatory dynamic range; provision coverage ≥150% already implies loan provision ≥1.5 × NPL, so a higher fixed floor would only penalize low-NPL banks), core Tier-1 capital adequacy at least 7.5%, Tier-1 capital adequacy at least 8.5%, and total capital adequacy at least 10.5%. These are strategy hard gates, not points.
 
+Insurers must have three complete annual insurance records and the latest available interim or quarterly record, all cutoff by announcement availability. Require explicit insurance-group, group-parent and material-subsidiary binding. Group and each material insurance subsidiary must meet core solvency 50% and comprehensive solvency 100%; a disclosed C/D risk rating, explicit regulatory dividend restriction, or an issuer-disclosed standalone group stress below either floor fails. Independent rate and equity stresses are never added. Missing subjects, periods, capital facts, stress facts or a reconciled parent available-funds bridge is `data_gap`.
+
 ## Scoring formulas
 
 - `ROE`: latest TTM ROE.
@@ -53,6 +55,8 @@ Percentiles are average-tie ranks without winsorizing. Before ranking, round ROE
 - `Bank cost-income`: latest disclosed cost-income ratio, lower is better.
 
 Use the bank, other-financial, and nonfinancial weights and standardization process in `SKILL.md`. Other-financial common factors use all financial passers as their percentile reference; their own weight model remains separate. Only all-gate passers may appear in the formal Top10. At most five Top10 members may share one `stock_basic.industry`; a capped company keeps its score and rank, is marked `concentration_capped`, and the next eligible company fills the slot.
+
+Insurance retains the other-financial score after its safety gate. Separate insurance factor weights are research-only until point-in-time multi-issuer history demonstrates useful early detection of regular-DPS cuts or capital/coverage deterioration without excessive stable-dividend exclusions.
 
 ## Removed factors
 
