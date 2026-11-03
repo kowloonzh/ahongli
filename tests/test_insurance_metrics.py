@@ -104,6 +104,22 @@ class InsuranceMetricsParserTest(unittest.TestCase):
         self.assertEqual(profile["insurance_quality_gate_status"], "data_gap")
         self.assertFalse(profile["insurance_quality_gate_passed"])
 
+    def test_quarterly_report_without_stress_uses_latest_annual_stress(self):
+        records = [self._annual_record(year) for year in [2023, 2024, 2025]]
+        quarter = {**records[-1], "period": "20260930", "report_type": "q3",
+                   "available_date": "20261029", "stress_scenarios_json": "[]"}
+        profile = self.strategy.insurance_quality_profile([*records, quarter])
+        self.assertTrue(profile["insurance_quality_gate_passed"])
+        self.assertEqual(profile["insurance_metrics_latest_period"], "20260930")
+        self.assertAlmostEqual(profile["insurance_stressed_core_solvency_ratio"], 156.3)
+
+    def test_stale_annual_stress_is_not_reused(self):
+        records = [self._annual_record(year) for year in [2023, 2024, 2025]]
+        records[-1]["stress_scenarios_json"] = "[]"
+        quarter = {**records[-1], "period": "20260930", "report_type": "q3", "available_date": "20261029"}
+        profile = self.strategy.insurance_quality_profile([*records, quarter])
+        self.assertEqual(profile["insurance_quality_gate_status"], "data_gap")
+
     def test_financing_is_reported_but_not_counted_in_subsidiary_coverage(self):
         records = [self._annual_record(year) for year in [2023, 2024, 2025]]
         profile = self.strategy.insurance_quality_profile(records)

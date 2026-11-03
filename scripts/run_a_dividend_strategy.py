@@ -1678,9 +1678,14 @@ def insurance_quality_profile(records: list[dict[str, Any]]) -> dict[str, Any]:
     subsidiaries = _json_value(latest.get("material_subsidiaries_json"), [])
     if not subsidiaries:
         subsidiaries = _json_value(latest_annual.get("material_subsidiaries_json"), [])
+    # Q1/Q3 reports carry no solvency stress tests; fall back to the latest
+    # annual report's stresses, applied to the latest group ratios. Older
+    # annual stresses are stale and never used.
     stresses = _json_value(latest.get("stress_scenarios_json"), [])
     if not stresses:
-        missing.append("最新披露的独立偿付能力压力情景")
+        stresses = _json_value(latest_annual.get("stress_scenarios_json"), [])
+    if not stresses:
+        missing.append("最新披露或最新年报的独立偿付能力压力情景")
     if not subsidiaries:
         missing.append("主要保险子公司偿付能力")
     if quality_bad or missing:

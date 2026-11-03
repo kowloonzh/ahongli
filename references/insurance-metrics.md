@@ -14,7 +14,7 @@ Keep the fiscal year to which a dividend belongs separate from the calendar peri
 
 ## Formal safety gate
 
-Core solvency must be at least 50% and comprehensive solvency at least 100% for the group and each material insurance subsidiary. Apply the same floors to every issuer-disclosed standalone group stress result. A public C/D risk rating or an explicit issuer-specific regulatory dividend restriction fails. Missing mandatory evidence, unreconciled parent cash, entity confusion, unit conflict or period gaps is `data_gap`.
+Core solvency must be at least 50% and comprehensive solvency at least 100% for the group and each material insurance subsidiary. Apply the same floors to every issuer-disclosed standalone group stress result, applied to the latest group ratios. Stresses come from the latest disclosure; Q1/Q3 reports carry none, so the latest annual report's stresses are used. Older annual stresses are never reused. A public C/D risk rating or an explicit issuer-specific regulatory dividend restriction fails. Missing mandatory evidence, unreconciled parent cash, entity confusion, unit conflict or period gaps is `data_gap`.
 
 Additional buffers and trends are research fields. Do not invent elimination thresholds beyond a regulatory or accounting basis. Do not add independent rate and equity stresses.
 
